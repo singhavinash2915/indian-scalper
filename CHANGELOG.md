@@ -6,6 +6,35 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 2 — Instruments + holiday calendar + market-hours awareness
+
+- **feat(data):** `src/data/holidays.py` — `HolidayCalendar`, SQLite-backed.
+  Loads NSE trading holidays from YAML, provides `is_trading_holiday`,
+  `is_trading_day`, `next_trading_day`, `holidays_for_year`. Idempotent
+  upsert on reload.
+- **feat(data):** `src/data/nse_holidays.yaml` — shipped with fixed-date
+  national holidays (Republic Day, Maharashtra Day, Independence Day,
+  Gandhi Jayanti, Christmas) for 2025 + 2026. Moveable holidays (Holi,
+  Diwali, Mahashivratri, Eid, Good Friday, Ram Navami, etc.) are flagged
+  as TODO — must be populated annually from the NSE circular.
+- **feat(data):** `src/data/instruments.py` — `InstrumentMaster`,
+  SQLite-backed. `load_equity_from_csv` parses NSE `EQUITY_L.csv` format
+  (EQ-series only, skips BE/BL/BT illiquid segments).
+  `refresh_equity_from_network` fetches the live CSV from
+  `archives.nseindia.com` via httpx + tenacity exponential-backoff retry.
+- **feat(scheduler):** `is_market_open` and `can_enter_new_trade` now
+  accept an optional `HolidayCalendar`. Back-compat preserved — callers
+  without a calendar get weekend-only gating as before.
+- **test(data):** 8 tests for `HolidayCalendar` (fixture loader,
+  idempotency, trading-day queries, invalid-YAML rejection, shipped
+  default parseability).
+- **test(data):** 7 tests for `InstrumentMaster` (EQ filtering, get,
+  segment/exchange filters, upsert idempotency, empty-CSV rejection).
+- **test(scheduler):** 3 new tests covering holiday-closes-session,
+  entry-blocked-on-holiday, and non-holiday passthrough.
+- **fixtures:** `tests/fixtures/sample_holidays.yaml`,
+  `tests/fixtures/sample_equity_master.csv`.
+
 ### Deliverable 1 — Project skeleton
 
 - **feat(scaffold):** project layout per `PROMPT.md` — `src/brokers`, `src/config`,

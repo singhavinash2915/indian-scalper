@@ -29,10 +29,11 @@ htmlcov/
 Thumbs.db
 
 # --- Project runtime state ---
+# Anchor these at the repo root so they don't swallow `src/data/` source.
 .env
 config.yaml
-data/
-logs/
+/data/
+/logs/
 *.db
 *.db-journal
 

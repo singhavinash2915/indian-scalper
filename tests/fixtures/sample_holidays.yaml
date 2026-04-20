@@ -1,0 +1,11 @@
+# Test-only fixture. Dates chosen for the test_holidays suite:
+#  * 2026-01-26 Republic Day (Monday) — weekday holiday
+#  * 2026-04-20 Ram Navami (Monday) — weekday holiday we want next_trading_day
+#    to skip
+#  * 2026-08-15 Independence Day (Saturday) — weekend, harmless noise
+2026:
+  - { date: "2026-01-26", name: "Republic Day" }
+  - { date: "2026-04-20", name: "Ram Navami (test)" }
+  - { date: "2026-08-15", name: "Independence Day" }
+2027:
+  - { date: "2027-01-26", name: "Republic Day" }

@@ -1,0 +1,33 @@
+# NSE Equity Segment Trading Holidays
+# -----------------------------------
+# Source of truth: NSE publishes the annual trading-holiday circular at
+#   https://www.nseindia.com/resources/exchange-communication-holidays
+# Cross-check against the BSE list too. Muhurat trading (Diwali evening) is
+# NOT a full holiday — handled separately in a later deliverable.
+#
+# Format: a list per year. Each entry needs `date` (YYYY-MM-DD) and `name`.
+# Weekends are skipped automatically — no need to list holidays that fall
+# on Sat/Sun, but it's harmless if you do.
+#
+# Fixed-date national holidays are populated below. Moveable holidays
+# (Holi, Mahashivratri, Eid, Diwali, Good Friday, Ram Navami, etc.) MUST
+# be added annually from the NSE circular — do not guess.
+
+2025:
+  - { date: "2025-01-26", name: "Republic Day" }           # Sun — no impact, kept for completeness
+  - { date: "2025-05-01", name: "Maharashtra Day" }         # Thu
+  - { date: "2025-08-15", name: "Independence Day" }        # Fri
+  - { date: "2025-10-02", name: "Gandhi Jayanti" }          # Thu
+  - { date: "2025-12-25", name: "Christmas" }               # Thu
+  # TODO: add 2025 moveable holidays from NSE circular:
+  #   Mahashivratri, Holi, Id-Ul-Fitr, Ram Navami, Mahavir Jayanti,
+  #   Good Friday, Ambedkar Jayanti, Buddha Purnima, Bakri Id, Muharram,
+  #   Ganesh Chaturthi, Dussehra, Diwali-Balipratipada, Prakash Gurpurb.
+
+2026:
+  - { date: "2026-01-26", name: "Republic Day" }            # Mon
+  - { date: "2026-05-01", name: "Maharashtra Day" }         # Fri
+  - { date: "2026-08-15", name: "Independence Day" }        # Sat — no impact
+  - { date: "2026-10-02", name: "Gandhi Jayanti" }          # Fri
+  - { date: "2026-12-25", name: "Christmas" }               # Fri
+  # TODO: add 2026 moveable holidays from NSE circular when published.
