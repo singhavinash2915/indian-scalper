@@ -1,4 +1,6 @@
-"""Indicators, 8-factor scoring engine, entry filters.
+"""Indicators, 8-factor scoring engine, entry filters."""
 
-Filled in by Deliverable 3.
-"""
+from strategy import indicators
+from strategy.scoring import FactorResult, Score, score_symbol
+
+__all__ = ["FactorResult", "Score", "indicators", "score_symbol"]

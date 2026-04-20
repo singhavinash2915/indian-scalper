@@ -6,6 +6,42 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 3 — Indicator library + 8-factor scoring engine
+
+- **feat(strategy):** `src/strategy/indicators.py` — pure-function wrappers
+  over pandas-ta with stable output-column names (`macd`, `hist`,
+  `signal` / `adx`, `dmp`, `dmn` / `lower`, `middle`, `upper`,
+  `bandwidth`, `percent` / `line`, `direction`, `long`, `short`).
+  Exports: `ema`, `rsi`, `atr`, `volume_sma`, `macd`, `adx`, `bbands`,
+  `supertrend`, `vwap`. Intraday VWAP is hand-rolled with daily reset
+  via `df.index.normalize()` groupby; zero-volume bars guarded via
+  `Series.where(cum_vol != 0)` so the output stays float-dtype.
+- **feat(strategy):** `src/strategy/scoring.py` — the 8-factor scoring
+  engine. `score_symbol(df, cfg)` returns a frozen `Score` dataclass
+  with `total` (0–8), per-factor `results` tuple, `breakdown` dict,
+  `blocked` flag + `block_reason`. Hard block fires when
+  `RSI > rsi_upper_block`, killing the signal even on 8/8. Every
+  threshold comes from `StrategyCfg` — no magic numbers in the engine.
+  Factors: EMA stack, VWAP cross (within last 2 bars), MACD histogram
+  zero-line cross, RSI in entry range, ADX ≥ min, volume surge vs.
+  SMA-20, Bollinger squeeze→breakout (bandwidth ≥ 1.5× rolling-min +
+  expanding + close above middle band), Supertrend bullish direction
+  with close above line.
+- **feat(strategy):** input validation — `ValueError` on missing OHLCV
+  columns, `ValueError` on < `MIN_LOOKBACK_BARS` (60, covers EMA 50 +
+  MACD 12/26/9 warm-up).
+- **test(strategy):** 17 new tests. `tests/fixtures/synthetic.py` ships
+  three seeded OHLCV generators: `bullish_breakout_df` (regime factors
+  fire, no hard block), `flat_chop_df` (scores far below `min_score`),
+  `parabolic_df` (RSI > 78 → hard block). `tests/test_indicators.py`
+  covers every wrapper with invariant-level checks (EMA of constant,
+  RSI extrema, MACD sign on accelerating trend, ADX trend-vs-chop,
+  Supertrend direction, ATR scale, VWAP daily reset, DatetimeIndex
+  requirement). `tests/test_scoring.py` covers 8/8 regime firing,
+  chop-vs-bullish separation, hard-block trigger, missing-columns and
+  short-history rejection, deterministic purity, and dataclass
+  immutability.
+
 ### Deliverable 2 — Instruments + holiday calendar + market-hours awareness
 
 - **feat(data):** `src/data/holidays.py` — `HolidayCalendar`, SQLite-backed.
