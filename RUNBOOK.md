@@ -406,4 +406,28 @@ KPIs, and the most recent `entered` + `watch_only_logged` signals.
 The universe edit + chart drawer live on `/` (desktop) — anything
 you'd normally do on the phone is on `/m/`.
 
+### TradingView cross-check (Pine Script)
+
+Paste `pine/indian-scalper-scorer.pine` into TradingView's Pine editor
+to run an independent implementation of the 8-factor scorer on any
+chart. Lets you verify the bot's decisions manually.
+
+Daily workflow:
+
+1. Bot finishes first scan at 09:30 IST → check `/signals` for the
+   top 3 by score.
+2. In TV, open each symbol on the 15-minute timeframe with the
+   indicator applied. Score should match within ±1 once warmed up
+   (~100 bars).
+3. Persistent disagreement → flip bot to `watch_only`, investigate.
+
+Dump bot scores per bar for a direct diff:
+
+```bash
+uv run scalper-pine-parity --symbol RELIANCE --out reliance.csv
+```
+
+Known divergences that are NOT bugs (warmup differences, last-bar
+volume, pre-market bars) documented in `pine/README.md`.
+
 ### systemd / Docker — see README §Deployment
