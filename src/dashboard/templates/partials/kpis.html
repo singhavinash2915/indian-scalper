@@ -35,8 +35,12 @@
   <div class="panel kpi">
     <h2>Kill Switch</h2>
     <div class="value {{ 'bad' if kill_switch else 'good' }}">
-      {{ "ON · HALTED" if kill_switch else "OFF · live" }}
+      {{ "TRIPPED" if kill_switch else "ARMED" }}
     </div>
-    <div class="sub">mode {{ mode }} · broker {{ broker_name }}</div>
+    <div class="sub">
+      {% if kill_switch %}scheduler stopped; rearm + resume to restart
+      {% else %}ready to halt{% endif %}
+      · broker {{ broker_name }}
+    </div>
   </div>
 </div>

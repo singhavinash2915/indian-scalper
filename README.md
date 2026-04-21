@@ -21,11 +21,11 @@ not yet implemented. See `PROMPT.md` for the full build plan.
 # Install uv once
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install deps into .venv
+# Install deps into .venv + project itself as an editable package
 uv sync
 
 # Generate default config on first run
-uv run python -m main
+uv run scalper-bootstrap
 # → writes config.yaml — edit, then re-run
 
 # Run tests
@@ -54,8 +54,13 @@ Secrets live in `.env` (copy from `.env.example`, gitignored).
 Local Python process (paper mode, scheduler + dashboard in one process):
 
 ```bash
-uv run python -m serve
-# Dashboard: http://127.0.0.1:8080
+uv sync              # installs the project as a package — one-time.
+uv run scalper       # starts scheduler + dashboard on 127.0.0.1:8080
+
+# Useful siblings:
+uv run scalper-preflight             # 11-check launch gate
+uv run scalper-bootstrap             # writes config.yaml on first run
+uv run python -m serve               # identical to `uv run scalper`
 ```
 
 ## Deployment

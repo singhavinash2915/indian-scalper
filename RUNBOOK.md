@@ -22,7 +22,7 @@ uv sync --group dev                                # add pytest / ruff / mypy
 uv run pytest                                      # sanity — all tests green
 
 # First run writes config.yaml from the embedded template then exits.
-uv run python -m main
+uv run scalper-bootstrap
 # → edit config.yaml (universe, capital, risk thresholds, logging)
 
 # Refresh the NSE instruments master (one-off, ~5s).
@@ -36,11 +36,14 @@ InstrumentMaster('data/scalper.db').refresh_equity_from_network()"
 #   NSE circular before going live.
 
 # Pre-flight — refuses to start unless every gate is green.
-uv run python -m preflight
+uv run scalper-preflight
 
 # Launch (scheduler + dashboard in one process, port 8080).
-uv run python -m serve
+uv run scalper
 # → http://127.0.0.1:8080
+#
+# Equivalent: `uv run python -m serve`. Both Just Work after uv sync —
+# no PYTHONPATH needed.
 
 # Flip trade_mode watch_only → paper via the dashboard's three-way
 # switch (confirm modal, HMAC token). No restart required.

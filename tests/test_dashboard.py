@@ -101,9 +101,13 @@ def test_kpis_partial_shows_starting_capital(client: TestClient) -> None:
 
 
 def test_kpis_partial_reflects_kill_switch(client: TestClient) -> None:
+    """Kill-switch tile reflects the control_flags value verbatim —
+    ``ARMED`` when safe, ``TRIPPED`` when the emergency halt is on."""
     client.broker.set_kill_switch(True)  # type: ignore[attr-defined]
     html = client.get("/partials/kpis").text
-    assert "ON · HALTED" in html
+    assert "TRIPPED" in html
+    # Safe-state label is NOT present when the switch is flipped on.
+    assert "ARMED" not in html.split("Kill Switch")[1][:200]
 
 
 # ---------------------------------------------------------------- #
