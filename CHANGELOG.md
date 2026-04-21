@@ -6,6 +6,59 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 7 — Backtest harness + dry-run mode
+
+- **feat(backtest):** `src/backtest/harness.py` — `BacktestHarness.run()`
+  iterates the union of all candle timestamps, advances a
+  ``BacktestCandleFetcher`` cutoff per bar (so no look-ahead into
+  future candles), and drives the *same* ``run_tick`` the live scan
+  loop uses. Strategy + risk code paths in a backtest are
+  byte-identical to production.
+- **feat(backtest):** `BacktestCandleFetcher` — ``set_now(ts)`` +
+  ``get_candles`` filter. Subclass of ``FakeCandleFetcher`` so tests
+  can still seed arbitrary series.
+- **feat(backtest):** `BacktestConfig` (bars_per_year + stop_at_ts)
+  and `BacktestResult` (trades, equity_curve, tick_reports, metrics,
+  starting/final equity, timestamps_processed, ticks_skipped). Result
+  includes a ``.summary()`` method for human-readable console output.
+- **feat(backtest):** `src/backtest/trades.py` — `extract_trades()`
+  FIFO-pairs filled BUY/SELL orders into closed `Trade` rows. Handles
+  partial closes (one BUY → multiple Trade rows as SELLs chip away).
+  Open positions at end-of-series are not reported. Long-only for now.
+- **feat(backtest):** `src/backtest/metrics.py` — `compute_sharpe`
+  (annualised from bar-returns with configurable ``bars_per_year``),
+  `compute_max_drawdown` (peak / trough + timestamps),
+  `compute_win_rate`, `compute_avg_rr` (realised |avg_win|/|avg_loss|
+  ratio), `compute_total_pnl`, `compute_avg_holding_minutes`. Every
+  function tolerates empty / degenerate input — returns NaN or 0.0
+  rather than raising.
+- **feat(backtest):** `src/backtest/dry_run.py` — `run_dry_run(ctx,
+  fetcher, speed_multiplier=10)` wraps the harness loop with
+  ``time.sleep`` calibrated from ``candle_interval``. ``sleep_fn`` is
+  injectable so tests don't actually sleep. Rejects unsupported
+  intervals + non-positive speeds.
+- **fix(scheduler):** order timestamps now come from the scan loop's
+  simulated ``ts`` instead of ``datetime.now(IST)``. Bug surfaced via
+  backtest replay where entry and exit order ts values were
+  wall-clock-milliseconds apart, destroying holding-time metrics.
+  PaperBroker.place_order accepts an optional ``ts`` kwarg;
+  ``run_tick`` threads the tick's ``ts`` through every entry /
+  exit / EOD-close / time-stop-close call.
+- **fix(scheduler):** position sizing now caps at ``available × 0.95``
+  so a 100%-of-cash entry plus downstream slippage can never trip the
+  InsufficientFundsError guard on re-entries after tight-stop fixtures.
+- **test(backtest):** 6 tests for FIFO trade extraction
+  (round-trip, losing trade, pending-order exclusion, partial close,
+  open-position-at-end handling, multi-symbol independence).
+- **test(backtest):** 14 tests for metrics (Sharpe sign + NaN edges,
+  max drawdown on rising / falling curves, win-rate math, avg-RR
+  no-losses/no-wins NaN, total P&L, avg holding).
+- **test(backtest):** 11 integration tests for the harness + dry-run
+  (future-masking contract, trade closure on bullish fixture, Saturday
+  series skipped entirely, empty-series safety, summary rendering,
+  dry-run sleep count = bars-1, bad speed rejected, unknown interval
+  rejected, same result shape as harness, stop-at-ts truncation).
+
 ### Deliverable 6 — Scan loop
 
 - **feat(scheduler):** full rewrite of `src/scheduler/scan_loop.py`.

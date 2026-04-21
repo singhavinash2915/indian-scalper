@@ -136,10 +136,15 @@ class PaperBroker(BrokerBase):
         order_type: OrderType,
         price: float | None = None,
         trigger_price: float | None = None,
+        ts: datetime | None = None,
     ) -> Order:
+        """Paper-specific extension over ``BrokerBase.place_order``: accepts
+        an optional ``ts`` so backtest and dry-run drivers can pin the
+        order's timestamp to the simulated tick time. Falls back to
+        ``datetime.now(IST)`` when omitted (live-ish paper mode)."""
         return self.om.submit(
             symbol=symbol, qty=qty, side=side, order_type=order_type,
-            price=price, trigger_price=trigger_price,
+            price=price, trigger_price=trigger_price, ts=ts,
         )
 
     def modify_order(self, order_id: str, **kwargs: object) -> Order:

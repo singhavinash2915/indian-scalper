@@ -291,6 +291,10 @@ def _evaluate_symbol(
     lot_size = inst.lot_size if inst else 1
 
     funds = ctx.broker.get_funds()
+    # Cap notional at 95% of available cash — the 5% buffer absorbs
+    # per-order slippage + bar-to-bar drift between sizing and fill, so
+    # a single position never triggers the InsufficientFundsError guard
+    # at settle time.
     size = position_size(
         capital=funds["equity"],
         risk_per_trade_pct=ctx.settings.risk.risk_per_trade_pct,
@@ -298,13 +302,15 @@ def _evaluate_symbol(
         stop_price=stop,
         lot_size=lot_size,
         segment=segments[symbol],
-        max_notional=funds["available"],
+        max_notional=funds["available"] * 0.95,
     )
     if size.qty == 0:
         logger.debug("[{}] {} sized to zero: {}", trace_id, symbol, size.note)
         return None
 
-    order = ctx.broker.place_order(symbol, size.qty, Side.BUY, OrderType.MARKET)
+    order = ctx.broker.place_order(
+        symbol, size.qty, Side.BUY, OrderType.MARKET, ts=ts,
+    )
     ctx.pending_stops[order.id] = (stop, tp)
 
     logger.info(
@@ -341,7 +347,7 @@ def _manage_positions(
         # 1. Hard stop / take-profit / trail-stop check against candle range.
         exit_reason = _exit_triggered(pos, last)
         if exit_reason:
-            report = _close_position(ctx, pos, exit_reason, trace_id)
+            report = _close_position(ctx, pos, exit_reason, trace_id, ts=ts)
             if report:
                 exits.append(report)
             continue
@@ -368,7 +374,7 @@ def _manage_positions(
         # 4. Time stop.
         decision = check_time_stop(pos, current_price, atr, ts, ctx.settings.risk)
         if decision.close_now:
-            report = _close_position(ctx, pos, "time_stop", trace_id)
+            report = _close_position(ctx, pos, "time_stop", trace_id, ts=ts)
             if report:
                 exits.append(report)
     return exits
@@ -396,11 +402,14 @@ def _exit_triggered(pos: Position, candle) -> str | None:
 
 def _close_position(
     ctx: ScanContext, pos: Position, reason: str, trace_id: str,
+    ts: datetime | None = None,
 ) -> ExitReport | None:
     side = Side.SELL if pos.qty > 0 else Side.BUY
     qty = abs(pos.qty)
     try:
-        order = ctx.broker.place_order(pos.symbol, qty, side, OrderType.MARKET)
+        order = ctx.broker.place_order(
+            pos.symbol, qty, side, OrderType.MARKET, ts=ts,
+        )
     except Exception as exc:  # pragma: no cover — broker failure
         logger.error("[{}] close {} failed: {}", trace_id, pos.symbol, exc)
         return None
@@ -416,7 +425,7 @@ def _squareoff_all(
 ) -> list[ExitReport]:
     exits: list[ExitReport] = []
     for pos in list(ctx.broker.get_positions()):
-        report = _close_position(ctx, pos, "eod_squareoff", trace_id)
+        report = _close_position(ctx, pos, "eod_squareoff", trace_id, ts=ts)
         if report:
             exits.append(report)
     return exits
