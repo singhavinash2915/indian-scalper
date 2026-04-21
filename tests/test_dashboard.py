@@ -634,7 +634,11 @@ def test_preset_none_disables_all(client: TestClient) -> None:
     assert reg.enabled_symbols() == []
 
 
-def test_preset_not_implemented_returns_501(client: TestClient) -> None:
+def test_named_index_preset_applies_via_api(client: TestClient) -> None:
+    """Named-index presets are shipped with YAML symbol lists (per the
+    Tuesday-dry-run tooling), so the API should accept them. Symbols
+    not in the instruments master are counted in the response summary
+    but don't abort the call."""
     reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
     reg.seed_if_empty(["RELIANCE"])
     prep = client.post(
@@ -644,7 +648,10 @@ def test_preset_not_implemented_returns_501(client: TestClient) -> None:
         "/api/universe/preset/apply",
         json={"preset": "nifty_50", "token": prep["token"]},
     )
-    assert r.status_code == 501
+    assert r.status_code == 200
+    summary = r.json()["summary"]
+    assert summary["preset"] == "nifty_50"
+    assert summary["listed"] > 40  # Nifty 50 has 50 entries give or take
 
 
 def test_preset_prepare_rejects_unknown(client: TestClient) -> None:

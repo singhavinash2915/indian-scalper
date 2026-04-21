@@ -142,7 +142,22 @@ class ScanContext:
 # Tick entry point                                                  #
 # ---------------------------------------------------------------- #
 
-def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
+def run_tick(
+    ctx: ScanContext,
+    ts: datetime | None = None,
+    *,
+    ignore_market_hours: bool = False,
+) -> TickReport:
+    """Run one scheduler tick.
+
+    ``ignore_market_hours`` lets operator-tooling (the ``scalper-tick``
+    dry-run CLI) drive a single scan outside NSE session time.
+    Production callers leave it False — the market-hours gate is
+    part of what makes live trading safe. The flag only bypasses
+    step 3 (market hours); kill switch + scheduler_state gates and
+    entry-window gates still apply so a stopped / killed scheduler
+    remains inert.
+    """
     ts = ts or now_ist()
     trace_id = uuid.uuid4().hex[:8]
     report = TickReport(trace_id=trace_id, ts=ts)
@@ -182,7 +197,9 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
         return report
 
     # 3. Market hours (incl. holidays).
-    if not is_market_open(ctx.settings, ts, calendar=ctx.calendar):
+    if not ignore_market_hours and not is_market_open(
+        ctx.settings, ts, calendar=ctx.calendar,
+    ):
         report.skipped_reason = "market_closed"
         return report
 
@@ -236,8 +253,13 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
     # 7. Manage existing positions: stops, trailing, time stop.
     report.exits.extend(_manage_positions(ctx, candles_by_symbol, ts, trace_id))
 
-    # 8. Entry window check.
-    if not can_enter_new_trade(ctx.settings, ts, calendar=ctx.calendar):
+    # 8. Entry window check. Bypassed with ``ignore_market_hours``
+    #    (dry-run tooling) so signals + snapshots populate regardless
+    #    of the session-start + skip_first_minutes + entry_cutoff
+    #    constraints.
+    if not ignore_market_hours and not can_enter_new_trade(
+        ctx.settings, ts, calendar=ctx.calendar,
+    ):
         report.notes.append("outside_entry_window")
         return report
 

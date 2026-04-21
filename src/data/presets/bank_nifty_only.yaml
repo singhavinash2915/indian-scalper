@@ -1,0 +1,19 @@
+name: bank_nifty_only
+source: "Bank Nifty (NIFTY BANK) constituents; verify against niftyindices.com"
+reviewed_at: "2026-04-21"
+
+# 12-stock Bank Nifty index — the banks-only universe for anyone who
+# only wants to trade the banking sector.
+symbols:
+  - HDFCBANK
+  - ICICIBANK
+  - SBIN
+  - KOTAKBANK
+  - AXISBANK
+  - INDUSINDBK
+  - BANKBARODA
+  - PNB
+  - CANBK
+  - FEDERALBNK
+  - IDFCFIRSTB
+  - AUBANK

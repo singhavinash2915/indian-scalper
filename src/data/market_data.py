@@ -190,6 +190,46 @@ def candles_from_csv(path: str | Path) -> list[Candle]:
     return out
 
 
+def save_candles_bulk(
+    series: dict[str, list[Candle]],
+    cache_dir: str | Path,
+) -> dict[str, Path]:
+    """Write one CSV per symbol to ``cache_dir``. Returns a dict
+    ``symbol → written_path``. Used by the replay CLI so historical
+    days can be cached locally and replayed without hitting the
+    network again."""
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+    for symbol, candles in series.items():
+        if not candles:
+            continue
+        safe = symbol.replace("/", "_").replace("\\", "_")
+        path = cache_dir / f"{safe}.csv"
+        candles_to_csv(candles, path)
+        written[symbol] = path
+    return written
+
+
+def load_candles_bulk(
+    cache_dir: str | Path,
+    symbols: list[str] | None = None,
+) -> dict[str, list[Candle]]:
+    """Read every ``*.csv`` under ``cache_dir`` (or the listed subset)
+    back into a ``{symbol: [Candle, …]}`` dict ready for
+    ``BacktestCandleFetcher``."""
+    cache_dir = Path(cache_dir)
+    if not cache_dir.exists():
+        return {}
+    out: dict[str, list[Candle]] = {}
+    for path in sorted(cache_dir.glob("*.csv")):
+        symbol = path.stem
+        if symbols is not None and symbol not in symbols:
+            continue
+        out[symbol] = candles_from_csv(path)
+    return out
+
+
 def df_to_candles(df) -> list[Candle]:
     """Convert an OHLCV DataFrame (with a DatetimeIndex) into a list of
     ``Candle``. Mostly useful for wiring strategy-engine fixtures into

@@ -26,23 +26,19 @@ from loguru import logger
 
 from brokers.base import Segment
 from data.instruments import InstrumentMaster
+from data.presets import list_available_presets, load_preset_symbols
 from execution.state import StateStore
 
 IST = ZoneInfo("Asia/Kolkata")
 
-# Named presets the dashboard exposes. ``none`` + ``all`` are the only
-# ones with a working implementation out of the box — index-membership
-# presets need operator-supplied symbol lists (nsepython is an optional
-# extension; wiring it up is a follow-up task).
-KNOWN_PRESETS: tuple[str, ...] = (
-    "none",
-    "all",
-    "nifty_50",
-    "nifty_100",
-    "nifty_next_50",
-    "bank_nifty_only",
+# ``none`` + ``all`` are logical operations over the existing universe
+# and need no shipped symbol list. Index presets load their list from
+# ``src/data/presets/{name}.yaml`` — see ``data.presets``.
+LOGICAL_PRESETS: tuple[str, ...] = ("none", "all")
+KNOWN_PRESETS: tuple[str, ...] = tuple(
+    sorted(set(LOGICAL_PRESETS) | set(list_available_presets()))
 )
-IMPLEMENTED_PRESETS: tuple[str, ...] = ("none", "all")
+IMPLEMENTED_PRESETS: tuple[str, ...] = KNOWN_PRESETS
 
 
 @dataclass(frozen=True)
@@ -314,33 +310,129 @@ class UniverseRegistry:
     def apply_preset(self, preset: str, actor: str = "web") -> dict[str, int]:
         """Atomically apply a named preset.
 
-        ``none`` disables every current row.
-        ``all`` enables every current row.
-        Named-index presets (``nifty_50`` etc.) raise
-        ``PresetNotImplementedError`` until their symbol lists are
-        shipped.
+        * ``none`` — disable every current row.
+        * ``all``  — enable every current row.
+        * Index presets (``nifty_50`` / ``nifty_100`` / ``nifty_next_50``
+          / ``bank_nifty_only`` / any other YAML in
+          ``src/data/presets/``): insert any listed symbols that aren't
+          yet in ``universe_membership`` (validated against the
+          instruments master — missing symbols are counted + returned
+          without aborting the rest), enable the listed ones, disable
+          everything NOT in the list. The whole thing runs inside a
+          single SQLite transaction.
+
+        Raises ``PresetNotImplementedError`` only if the operator asks
+        for a name that's not shipped AS a YAML AND isn't a logical
+        preset — which is now only true if someone adds a new preset
+        name to ``KNOWN_PRESETS`` without shipping the file. In
+        practice the module auto-discovers ``*.yaml`` so this is a
+        belt-and-braces guard.
         """
         if preset not in KNOWN_PRESETS:
             raise ValueError(f"unknown preset {preset!r}; known: {KNOWN_PRESETS}")
-        if preset not in IMPLEMENTED_PRESETS:
-            raise PresetNotImplementedError(
-                f"preset {preset!r} has no shipped symbol list yet — use "
-                f"add/bulk_update, or populate src/data/presets/{preset}.yaml"
+
+        if preset in LOGICAL_PRESETS:
+            return self._apply_logical_preset(preset, actor)
+
+        # Symbol-list preset — load the YAML.
+        try:
+            symbols = load_preset_symbols(preset)
+        except FileNotFoundError as exc:
+            raise PresetNotImplementedError(str(exc)) from exc
+
+        summary = {
+            "preset": preset,
+            "listed": len(symbols),
+            "missing_from_instruments": 0,
+            "inserted": 0,
+            "enabled": 0,
+            "disabled_non_members": 0,
+        }
+        now = datetime.now(IST).isoformat()
+        # Partition preset symbols: those in the instruments master
+        # (addable) vs those not (counted + skipped).
+        known_symbols: list[str] = []
+        for sym in symbols:
+            if self.instruments.get(sym) is not None:
+                known_symbols.append(sym)
+            else:
+                summary["missing_from_instruments"] += 1
+        known_set = set(known_symbols)
+
+        with self.store._conn() as c:  # pyright: ignore[reportPrivateUsage]
+            # Insert / enable each preset symbol we can validate.
+            for sym in known_symbols:
+                existed = c.execute(
+                    "SELECT enabled FROM universe_membership "
+                    "WHERE symbol = ? AND segment = 'EQ'",
+                    (sym,),
+                ).fetchone()
+                if not existed:
+                    c.execute(
+                        "INSERT INTO universe_membership"
+                        "(symbol, segment, enabled, watch_only_override,"
+                        " added_at, added_by) "
+                        "VALUES (?, 'EQ', 1, 0, ?, ?)",
+                        (sym, now, actor),
+                    )
+                    summary["inserted"] += 1
+                else:
+                    c.execute(
+                        "UPDATE universe_membership SET enabled = 1 "
+                        "WHERE symbol = ? AND segment = 'EQ'",
+                        (sym,),
+                    )
+            summary["enabled"] = len(known_symbols)
+
+            # Disable every existing EQ row NOT in the preset (we keep
+            # the rows so their history is preserved — enabled=0 is the
+            # "soft delete").
+            disabled_cur = c.execute(
+                "SELECT COUNT(*) FROM universe_membership "
+                "WHERE segment = 'EQ' AND enabled = 1",
+            ).fetchone()
+            before_enabled = int(disabled_cur[0]) if disabled_cur else 0
+            if known_set:
+                placeholders = ",".join("?" for _ in known_set)
+                c.execute(
+                    f"UPDATE universe_membership SET enabled = 0 "
+                    f"WHERE segment = 'EQ' AND symbol NOT IN ({placeholders})",
+                    list(known_set),
+                )
+            else:
+                # Preset shipped nothing we recognise — disable all EQ.
+                c.execute(
+                    "UPDATE universe_membership SET enabled = 0 WHERE segment = 'EQ'",
+                )
+            after_enabled_cur = c.execute(
+                "SELECT COUNT(*) FROM universe_membership "
+                "WHERE segment = 'EQ' AND enabled = 1",
+            ).fetchone()
+            after_enabled = int(after_enabled_cur[0]) if after_enabled_cur else 0
+            summary["disabled_non_members"] = max(
+                0, before_enabled - after_enabled + summary["inserted"],
             )
+
+        self.store.append_operator_audit(
+            "universe.apply_preset", actor=actor, payload=summary,
+        )
+        logger.info(
+            "Applied preset {} — listed={} inserted={} missing={}",
+            preset, summary["listed"], summary["inserted"],
+            summary["missing_from_instruments"],
+        )
+        return summary
+
+    def _apply_logical_preset(self, preset: str, actor: str) -> dict[str, int]:
         with self.store._conn() as c:  # pyright: ignore[reportPrivateUsage]
             if preset == "none":
                 c.execute("UPDATE universe_membership SET enabled = 0")
-                changed = c.total_changes
             elif preset == "all":
                 c.execute("UPDATE universe_membership SET enabled = 1")
-                changed = c.total_changes
-            else:
-                changed = 0
+            changed = c.total_changes
         summary = {"preset": preset, "affected": int(changed)}
         self.store.append_operator_audit(
-            "universe.apply_preset",
-            actor=actor,
-            payload=summary,
+            "universe.apply_preset", actor=actor, payload=summary,
         )
         logger.info("Applied preset {} affecting {} rows", preset, changed)
         return {"affected": int(changed)}

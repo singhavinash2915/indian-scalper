@@ -190,12 +190,52 @@ def test_preset_all_enables_all(tmp_path: Path) -> None:
     assert set(reg.enabled_symbols()) == {"RELIANCE", "TCS"}
 
 
-def test_named_index_presets_not_implemented(tmp_path: Path) -> None:
+def test_named_index_presets_load_shipped_lists(tmp_path: Path) -> None:
+    """Every named preset shipped in src/data/presets/ should apply
+    cleanly. The fixture instruments master has 4 EQ symbols
+    (RELIANCE / TCS / HDFCBANK / INFY); any of them appearing in a
+    preset count as resolvable, the rest go into
+    ``missing_from_instruments``."""
     reg = _setup(tmp_path)
     reg.seed_if_empty(["RELIANCE"])
     for preset in ("nifty_50", "nifty_100", "nifty_next_50", "bank_nifty_only"):
-        with pytest.raises(PresetNotImplementedError):
-            reg.apply_preset(preset)
+        summary = reg.apply_preset(preset)
+        # Shipped preset has a non-empty symbol list.
+        assert summary["listed"] > 0
+        # Accounting invariant: enabled + missing_from_instruments == listed
+        assert summary["enabled"] + summary["missing_from_instruments"] == summary["listed"]
+        # Can't have negative row counts.
+        assert summary["missing_from_instruments"] >= 0
+        assert summary["enabled"] >= 0
+
+
+def test_preset_symbols_enabled_and_others_disabled(tmp_path: Path) -> None:
+    """Mini-preset test: seed the instruments master with a handful of
+    symbols, apply a preset that covers some of them, verify enabled/
+    disabled partitioning."""
+    reg = _setup(tmp_path)
+    # Pre-populate instruments master with 4 symbols (2 in preset, 2 not).
+    import sqlite3
+    from datetime import datetime
+    with sqlite3.connect(reg.instruments._db_path) as c:  # pyright: ignore[reportPrivateUsage]
+        for sym in ("RELIANCE", "TCS", "NOTINPRESET1", "NOTINPRESET2"):
+            c.execute(
+                "INSERT OR REPLACE INTO instruments"
+                "(symbol, exchange, segment, tick_size, lot_size,"
+                " name, isin, series, updated_at)"
+                " VALUES (?, 'NSE', 'EQ', 0.05, 1, ?, ?, 'EQ', ?)",
+                (sym, sym, f"ISIN_{sym}", datetime.utcnow().isoformat()),
+            )
+    reg.seed_if_empty(["RELIANCE", "TCS", "NOTINPRESET1", "NOTINPRESET2"])
+
+    # nifty_50 contains RELIANCE + TCS.
+    summary = reg.apply_preset("nifty_50")
+    enabled = set(reg.enabled_symbols())
+    assert "RELIANCE" in enabled
+    assert "TCS" in enabled
+    assert "NOTINPRESET1" not in enabled
+    assert "NOTINPRESET2" not in enabled
+    assert summary["missing_from_instruments"] > 0  # rest of Nifty 50 not in our master
 
 
 def test_preset_rejects_unknown(tmp_path: Path) -> None:
@@ -205,11 +245,42 @@ def test_preset_rejects_unknown(tmp_path: Path) -> None:
 
 
 def test_known_and_implemented_presets_documented() -> None:
-    """The public tuples must include the spec's presets, and `all` is
-    the bonus one we ship working."""
+    """All spec-named presets are now shipped. IMPLEMENTED == KNOWN."""
     for preset in ("none", "all", "nifty_50", "nifty_100", "nifty_next_50", "bank_nifty_only"):
         assert preset in KNOWN_PRESETS
-    assert set(IMPLEMENTED_PRESETS).issubset(set(KNOWN_PRESETS))
+    # Every KNOWN preset is now runnable.
+    assert set(IMPLEMENTED_PRESETS) == set(KNOWN_PRESETS)
+
+
+def test_preset_not_implemented_error_path(tmp_path: Path) -> None:
+    """If someone manually adds a preset to KNOWN_PRESETS without
+    shipping the YAML, apply_preset should raise
+    PresetNotImplementedError. Demonstrates the guard is still live."""
+    reg = _setup(tmp_path)
+    # Monkey-patch a synthetic preset into KNOWN_PRESETS for this test.
+    import data.universe as u
+    original_known = u.KNOWN_PRESETS
+    u.KNOWN_PRESETS = (*original_known, "nonexistent_preset")
+    try:
+        with pytest.raises(PresetNotImplementedError):
+            reg.apply_preset("nonexistent_preset")
+    finally:
+        u.KNOWN_PRESETS = original_known
+
+
+def test_preset_loader_rejects_bad_yaml(tmp_path: Path) -> None:
+    """load_preset_symbols should surface a ValueError for malformed
+    YAML content."""
+    from data.presets import PRESETS_DIR, load_preset_symbols
+
+    bad = PRESETS_DIR / "__broken_test_preset.yaml"
+    try:
+        bad.write_text("name: broken\nsymbols: not_a_list\n")
+        with pytest.raises(ValueError):
+            load_preset_symbols("__broken_test_preset")
+    finally:
+        if bad.exists():
+            bad.unlink()
 
 
 # ---------------- Persistence ---------------- #

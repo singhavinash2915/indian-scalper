@@ -1,0 +1,128 @@
+# ─────────────────────────────────────────────────────────────────────
+# Nifty 100 index constituents — STARTER LIST, REVIEW BEFORE LIVE USE
+#
+# The Nifty 100 rebalances semi-annually (typically March + September).
+# Symbols are added/removed based on market cap + liquidity screens.
+# This shipped list is a reasonable approximation of the 100 largest
+# NSE-listed names but MAY drift from the current index.
+#
+# Before relying on this list for live trading:
+#   1. Download the latest constituents CSV from:
+#        https://www.niftyindices.com/indices/equity/broad-based-indices/NIFTY100
+#   2. Diff against the `symbols:` list below.
+#   3. If drift > 3 symbols, update the file and bump `reviewed_at`.
+#
+# Paper trading is more forgiving of drift — the 8-factor scorer will
+# just not signal on delisted names, and signals on non-Nifty-100
+# liquid names are not catastrophic. Do not treat this as the source
+# of truth for production.
+# ─────────────────────────────────────────────────────────────────────
+
+name: nifty_100
+source: "best-effort large-cap NSE equity list; verify against niftyindices.com"
+reviewed_at: "2026-04-21"
+
+symbols:
+  # ─── Nifty 50 core (50) ────────────────────────────────────────────
+  - RELIANCE
+  - TCS
+  - HDFCBANK
+  - ICICIBANK
+  - INFY
+  - HINDUNILVR
+  - ITC
+  - SBIN
+  - BHARTIARTL
+  - LT
+  - KOTAKBANK
+  - BAJFINANCE
+  - AXISBANK
+  - ASIANPAINT
+  - MARUTI
+  - SUNPHARMA
+  - TITAN
+  - ULTRACEMCO
+  - NESTLEIND
+  - HCLTECH
+  - WIPRO
+  - TATASTEEL
+  - POWERGRID
+  - NTPC
+  - INDUSINDBK
+  - BAJAJFINSV
+  - TECHM
+  - ADANIENT
+  - COALINDIA
+  - ONGC
+  - JSWSTEEL
+  - HINDALCO
+  - "M&M"
+  - TATAMOTORS
+  - GRASIM
+  - DRREDDY
+  - CIPLA
+  - EICHERMOT
+  - BPCL
+  - BRITANNIA
+  - DIVISLAB
+  - HEROMOTOCO
+  - SHREECEM
+  - UPL
+  - APOLLOHOSP
+  - SBILIFE
+  - HDFCLIFE
+  - TATACONSUM
+  - ADANIPORTS
+  - "BAJAJ-AUTO"
+
+  # ─── Nifty Next 50 additions (50) ──────────────────────────────────
+  - ABB
+  - ADANIGREEN
+  - ADANIPOWER
+  - AMBUJACEM
+  - BANKBARODA
+  - BERGEPAINT
+  - BIOCON
+  - BOSCHLTD
+  - CANBK
+  - CHOLAFIN
+  - COLPAL
+  - DABUR
+  - DLF
+  - DMART
+  - GAIL
+  - GODREJCP
+  - HAVELLS
+  - HINDPETRO
+  - ICICIGI
+  - ICICIPRULI
+  - IOC
+  - INDIGO
+  - IRCTC
+  - JINDALSTEL
+  - LICI
+  - LTIM
+  - LUPIN
+  - MARICO
+  - MOTHERSON
+  - MUTHOOTFIN
+  - NAUKRI
+  - NMDC
+  - PAYTM
+  - PEL
+  - PIDILITIND
+  - PIIND
+  - PNB
+  - POLYCAB
+  - SAIL
+  - SBICARD
+  - SHRIRAMFIN
+  - SIEMENS
+  - SRF
+  - TATAPOWER
+  - TORNTPHARM
+  - TRENT
+  - TVSMOTOR
+  - VBL
+  - VEDL
+  - ZYDUSLIFE

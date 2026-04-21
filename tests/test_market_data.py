@@ -68,3 +68,59 @@ def test_build_synthetic_candles_shapes() -> None:
     assert len(candles) == 3
     # Second candle's open should equal first candle's close (continuity).
     assert candles[1].open == 100.0
+
+
+# --------------------------------------------------------------------- #
+# Bulk save/load (Tuesday-dry-run tooling)                               #
+# --------------------------------------------------------------------- #
+
+def test_save_and_load_bulk_round_trip(tmp_path: Path) -> None:
+    from data.market_data import load_candles_bulk, save_candles_bulk
+
+    start = datetime(2026, 4, 21, 9, 15, tzinfo=IST)
+    series = {
+        "RELIANCE": build_synthetic_candles(start, 15, [100.0, 101.0, 102.0]),
+        "TCS": build_synthetic_candles(start, 15, [3000.0, 3005.0]),
+    }
+    written = save_candles_bulk(series, tmp_path / "cache")
+    assert set(written.keys()) == {"RELIANCE", "TCS"}
+
+    loaded = load_candles_bulk(tmp_path / "cache")
+    assert set(loaded.keys()) == {"RELIANCE", "TCS"}
+    assert [c.close for c in loaded["RELIANCE"]] == [100.0, 101.0, 102.0]
+    assert [c.close for c in loaded["TCS"]] == [3000.0, 3005.0]
+
+
+def test_load_bulk_filters_by_symbol_list(tmp_path: Path) -> None:
+    from data.market_data import load_candles_bulk, save_candles_bulk
+
+    start = datetime(2026, 4, 21, 9, 15, tzinfo=IST)
+    series = {
+        "A": build_synthetic_candles(start, 1, [1.0]),
+        "B": build_synthetic_candles(start, 1, [2.0]),
+        "C": build_synthetic_candles(start, 1, [3.0]),
+    }
+    save_candles_bulk(series, tmp_path / "cache")
+    loaded = load_candles_bulk(tmp_path / "cache", symbols=["A", "C"])
+    assert set(loaded.keys()) == {"A", "C"}
+
+
+def test_load_bulk_nonexistent_dir_returns_empty(tmp_path: Path) -> None:
+    from data.market_data import load_candles_bulk
+
+    assert load_candles_bulk(tmp_path / "does_not_exist") == {}
+
+
+def test_save_bulk_skips_empty_series(tmp_path: Path) -> None:
+    from data.market_data import load_candles_bulk, save_candles_bulk
+
+    # One symbol with data, one without.
+    start = datetime(2026, 4, 21, 9, 15, tzinfo=IST)
+    series = {
+        "HAS_DATA": build_synthetic_candles(start, 1, [100.0]),
+        "EMPTY": [],
+    }
+    save_candles_bulk(series, tmp_path / "cache")
+    loaded = load_candles_bulk(tmp_path / "cache")
+    assert "HAS_DATA" in loaded
+    assert "EMPTY" not in loaded

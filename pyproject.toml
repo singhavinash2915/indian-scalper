@@ -41,6 +41,8 @@ upstox = ["upstox-python-sdk>=2.0.0"]
 scalper = "serve:main"
 scalper-preflight = "preflight:main"
 scalper-bootstrap = "main:main"
+scalper-replay = "replay:main"
+scalper-tick = "tick_once:main"
 
 # src/-layout with hatchling: every sub-package listed below gets
 # installed at the top level (sources = ["src"] strips the prefix) so
@@ -68,6 +70,8 @@ include = [
     "src/main.py",
     "src/serve.py",
     "src/preflight.py",
+    "src/replay.py",
+    "src/tick_once.py",
 ]
 
 [tool.pytest.ini_options]

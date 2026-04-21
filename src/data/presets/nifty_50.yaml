@@ -1,0 +1,58 @@
+# See nifty_100.yaml header for the review disclaimer — same caveats
+# apply. This is the top-50 slice.
+
+name: nifty_50
+source: "best-effort Nifty 50 list; verify against niftyindices.com"
+reviewed_at: "2026-04-21"
+
+symbols:
+  - RELIANCE
+  - TCS
+  - HDFCBANK
+  - ICICIBANK
+  - INFY
+  - HINDUNILVR
+  - ITC
+  - SBIN
+  - BHARTIARTL
+  - LT
+  - KOTAKBANK
+  - BAJFINANCE
+  - AXISBANK
+  - ASIANPAINT
+  - MARUTI
+  - SUNPHARMA
+  - TITAN
+  - ULTRACEMCO
+  - NESTLEIND
+  - HCLTECH
+  - WIPRO
+  - TATASTEEL
+  - POWERGRID
+  - NTPC
+  - INDUSINDBK
+  - BAJAJFINSV
+  - TECHM
+  - ADANIENT
+  - COALINDIA
+  - ONGC
+  - JSWSTEEL
+  - HINDALCO
+  - "M&M"
+  - TATAMOTORS
+  - GRASIM
+  - DRREDDY
+  - CIPLA
+  - EICHERMOT
+  - BPCL
+  - BRITANNIA
+  - DIVISLAB
+  - HEROMOTOCO
+  - SHREECEM
+  - UPL
+  - APOLLOHOSP
+  - SBILIFE
+  - HDFCLIFE
+  - TATACONSUM
+  - ADANIPORTS
+  - "BAJAJ-AUTO"

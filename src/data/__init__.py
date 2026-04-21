@@ -10,6 +10,8 @@ from data.market_data import (
     candles_from_csv,
     candles_to_csv,
     df_to_candles,
+    load_candles_bulk,
+    save_candles_bulk,
 )
 from data.universe import (
     IMPLEMENTED_PRESETS,
@@ -38,4 +40,6 @@ __all__ = [
     "candles_from_csv",
     "candles_to_csv",
     "df_to_candles",
+    "load_candles_bulk",
+    "save_candles_bulk",
 ]

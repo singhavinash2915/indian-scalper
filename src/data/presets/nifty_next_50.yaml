@@ -1,0 +1,55 @@
+name: nifty_next_50
+source: "best-effort Nifty Next 50 list; verify against niftyindices.com"
+reviewed_at: "2026-04-21"
+
+symbols:
+  - ABB
+  - ADANIGREEN
+  - ADANIPOWER
+  - AMBUJACEM
+  - BANKBARODA
+  - BERGEPAINT
+  - BIOCON
+  - BOSCHLTD
+  - CANBK
+  - CHOLAFIN
+  - COLPAL
+  - DABUR
+  - DLF
+  - DMART
+  - GAIL
+  - GODREJCP
+  - HAVELLS
+  - HINDPETRO
+  - ICICIGI
+  - ICICIPRULI
+  - IOC
+  - INDIGO
+  - IRCTC
+  - JINDALSTEL
+  - LICI
+  - LTIM
+  - LUPIN
+  - MARICO
+  - MOTHERSON
+  - MUTHOOTFIN
+  - NAUKRI
+  - NMDC
+  - PAYTM
+  - PEL
+  - PIDILITIND
+  - PIIND
+  - PNB
+  - POLYCAB
+  - SAIL
+  - SBICARD
+  - SHRIRAMFIN
+  - SIEMENS
+  - SRF
+  - TATAPOWER
+  - TORNTPHARM
+  - TRENT
+  - TVSMOTOR
+  - VBL
+  - VEDL
+  - ZYDUSLIFE

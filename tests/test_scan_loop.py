@@ -706,3 +706,49 @@ def test_prune_old_snapshots_runs_once_per_day(tmp_path: Path) -> None:
     assert not any(r["symbol"] == "OLD" for r in post)
     # Marker set so next tick same day doesn't rerun the DELETE.
     assert ctx.broker.store.get_flag("last_signal_prune_date") is not None
+
+
+# ---------------------------------------------------------------- #
+# D11 Slice 2 toolkit — ignore_market_hours (for scalper-tick CLI)  #
+# ---------------------------------------------------------------- #
+
+def test_ignore_market_hours_bypasses_weekend(tmp_path: Path) -> None:
+    """``scalper-tick --ignore-market-hours`` drives the full pipeline
+    even when ``is_market_open`` returns False — used by the Tuesday
+    dry-run playbook's Phase 3 rehearsal."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    # Saturday — is_market_open would normally return False.
+    saturday_11am = datetime(2026, 4, 18, 11, 0, tzinfo=IST)
+
+    # Without the flag: skipped as market closed.
+    report_guarded = run_tick(ctx, saturday_11am)
+    assert report_guarded.skipped_reason == "market_closed"
+
+    # With the flag: falls through, snapshots written.
+    report_forced = run_tick(ctx, saturday_11am, ignore_market_hours=True)
+    assert report_forced.skipped_reason is None
+    # Either entered a position or logged skipped_score/skipped_filter,
+    # but NOT market_closed and NOT outside_entry_window.
+    assert "outside_entry_window" not in report_forced.notes
+
+
+def test_ignore_market_hours_still_respects_kill_switch(tmp_path: Path) -> None:
+    """Kill switch is an emergency override — ignore_market_hours must
+    NOT bypass it."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    ctx.broker.set_kill_switch(True, actor="test")
+    report = run_tick(
+        ctx, T_ENTRY, ignore_market_hours=True,
+    )
+    # Killed short-circuits before the market-hours gate is even considered.
+    assert report.skipped_reason == "killed"
+
+
+def test_ignore_market_hours_still_respects_scheduler_stopped(tmp_path: Path) -> None:
+    """scheduler_state=stopped must still halt even with the override."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    ctx.broker.store.set_flag("scheduler_state", "stopped", actor="test")
+    report = run_tick(
+        ctx, T_ENTRY, ignore_market_hours=True,
+    )
+    assert report.skipped_reason == "scheduler_stopped"
