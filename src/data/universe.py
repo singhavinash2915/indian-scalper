@@ -360,6 +360,14 @@ class UniverseRegistry:
         known_set = set(known_symbols)
 
         with self.store._conn() as c:  # pyright: ignore[reportPrivateUsage]
+            # Snapshot enabled-count BEFORE any mutation so the
+            # diagnostic "disabled_non_members" count is accurate.
+            pre_row = c.execute(
+                "SELECT COUNT(*) FROM universe_membership "
+                "WHERE segment = 'EQ' AND enabled = 1",
+            ).fetchone()
+            pre_enabled = int(pre_row[0]) if pre_row else 0
+
             # Insert / enable each preset symbol we can validate.
             for sym in known_symbols:
                 existed = c.execute(
@@ -384,14 +392,9 @@ class UniverseRegistry:
                     )
             summary["enabled"] = len(known_symbols)
 
-            # Disable every existing EQ row NOT in the preset (we keep
-            # the rows so their history is preserved — enabled=0 is the
-            # "soft delete").
-            disabled_cur = c.execute(
-                "SELECT COUNT(*) FROM universe_membership "
-                "WHERE segment = 'EQ' AND enabled = 1",
-            ).fetchone()
-            before_enabled = int(disabled_cur[0]) if disabled_cur else 0
+            # Disable every existing EQ row NOT in the preset. We keep
+            # the rows (soft-delete) so their history is preserved and
+            # a later re-enable keeps the original added_at.
             if known_set:
                 placeholders = ",".join("?" for _ in known_set)
                 c.execute(
@@ -400,17 +403,20 @@ class UniverseRegistry:
                     list(known_set),
                 )
             else:
-                # Preset shipped nothing we recognise — disable all EQ.
                 c.execute(
                     "UPDATE universe_membership SET enabled = 0 WHERE segment = 'EQ'",
                 )
-            after_enabled_cur = c.execute(
+            post_row = c.execute(
                 "SELECT COUNT(*) FROM universe_membership "
                 "WHERE segment = 'EQ' AND enabled = 1",
             ).fetchone()
-            after_enabled = int(after_enabled_cur[0]) if after_enabled_cur else 0
+            post_enabled = int(post_row[0]) if post_row else 0
+            # Rows that were enabled before the preset but aren't now =
+            # symbols kicked out of the universe by this preset.
+            # max(0, ...) guards against small accounting drift from the
+            # insert phase bumping pre-count indirectly.
             summary["disabled_non_members"] = max(
-                0, before_enabled - after_enabled + summary["inserted"],
+                0, pre_enabled + summary["inserted"] - post_enabled,
             )
 
         self.store.append_operator_audit(

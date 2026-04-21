@@ -245,6 +245,7 @@ def check_backtest_regression() -> PreflightCheck:
     """Smoke backtest against a shipped fixture. Scoring drift shows up
     as a mismatch in the expected trade count."""
     try:
+        from backtest.fixtures import bullish_breakout_df
         from backtest.harness import (
             BacktestCandleFetcher,
             BacktestConfig,
@@ -253,7 +254,6 @@ def check_backtest_regression() -> PreflightCheck:
         from brokers.paper import PaperBroker
         from data.market_data import df_to_candles
         from scheduler.scan_loop import ScanContext
-        from tests.fixtures.synthetic import bullish_breakout_df
     except Exception as exc:
         return _fail(
             "backtest_regression",
@@ -278,16 +278,19 @@ def check_backtest_regression() -> PreflightCheck:
             db_path=tmp_path / "instruments.db",
             cache_dir=tmp_path / "instruments_cache",
         )
-        fixture_csv = (
-            Path(__file__).resolve().parent.parent
-            / "tests" / "fixtures" / "sample_equity_master.csv"
-        )
-        try:
-            instruments.load_equity_from_csv(fixture_csv)
-        except Exception as exc:
-            return _fail(
-                "backtest_regression",
-                f"couldn't load instruments fixture: {exc}",
+        # Seed a minimal instruments row directly — the backtest only
+        # touches RELIANCE and the DAO interface takes raw SQL. Avoids
+        # depending on a CSV fixture path that might not survive
+        # packaging (lesson from the pre-wheel install path).
+        import sqlite3
+        with sqlite3.connect(str(tmp_path / "instruments.db")) as c:
+            c.execute(
+                "INSERT OR REPLACE INTO instruments"
+                "(symbol, exchange, segment, tick_size, lot_size,"
+                " name, isin, series, updated_at)"
+                " VALUES ('RELIANCE', 'NSE', 'EQ', 0.05, 1,"
+                " 'Reliance Industries', 'INE002A01018', 'EQ', ?)",
+                (datetime.utcnow().isoformat(),),
             )
 
         broker = PaperBroker(
