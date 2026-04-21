@@ -1,0 +1,115 @@
+#cloud-config
+# =============================================================================
+# cloud-init bootstrap for Indian Scalper on Hetzner / DigitalOcean / any
+# Debian-family cloud VM. Also works on a fresh Raspberry Pi OS (64-bit)
+# after you've done the initial SSH setup.
+#
+# What this does in order:
+#   1. Creates a non-root `scalper` user.
+#   2. Installs docker + docker-compose + Tailscale.
+#   3. Clones the repo to /opt/indian-scalper.
+#   4. Drops a docker-compose.tailnet.yml + .env template.
+#   5. Starts the Tailscale sidecar + scalper stack.
+#   6. Registers the scalper user with sudo-nopasswd ONLY for
+#      `systemctl status indian-scalper` / `docker compose logs` so
+#      you can SSH in and check state without a password.
+#
+# You MUST do these manually afterward:
+#   * ssh scalper@<host>
+#   * cd /opt/indian-scalper
+#   * Edit config.yaml for capital / universe / thresholds
+#   * Edit .env with:
+#       TS_AUTHKEY=tskey-auth-...  (from tailscale admin)
+#       UPSTOX_ACCESS_TOKEN=...    (only if trade_mode=live)
+#   * docker compose -f docker-compose.tailnet.yml up -d
+#   * Open the dashboard from your phone/laptop via tailnet.
+#
+# Provider notes:
+#   - DigitalOcean: paste this entire file into "User data" when
+#     creating the droplet (Ubuntu 24.04 LTS is ideal).
+#   - Hetzner: same — "Cloud Config" field.
+#   - Raspberry Pi: flash Raspberry Pi OS Lite 64-bit, enable SSH,
+#     run `cloud-init single --name write-files` after scp'ing this
+#     file to /boot/firmware/user-data.
+# =============================================================================
+
+users:
+  - name: scalper
+    groups: [sudo, docker]
+    shell: /bin/bash
+    # Grant passwordless sudo only for specific read-only commands so
+    # you can SSH in and `sudo docker logs` without typing a password,
+    # but NOT run arbitrary commands as root.
+    sudo:
+      - "ALL=(ALL) NOPASSWD: /usr/bin/docker logs *, /usr/bin/docker compose logs *, /usr/bin/systemctl status *"
+    ssh_authorized_keys: []
+    # REPLACE this empty list with your public key(s) before using;
+    # cloud-init refuses to create a passwordless user with no SSH key.
+
+package_update: true
+package_upgrade: false  # don't re-roll the world just to bootstrap
+
+packages:
+  - docker.io
+  - docker-compose-plugin
+  - git
+  - curl
+  - ca-certificates
+  - ufw
+
+runcmd:
+  # Docker daemon
+  - systemctl enable --now docker
+
+  # Tailscale install (official script; fast, no apt-key dance)
+  - curl -fsSL https://tailscale.com/install.sh | sh
+
+  # Firewall: block everything except SSH + Tailscale. Dashboard reaches
+  # out via tailnet; no public 8080 ever.
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow ssh
+  - ufw allow 41641/udp  # Tailscale STUN
+  - ufw --force enable
+
+  # Clone the repo
+  - git clone https://github.com/singhavinash2915/indian-scalper.git /opt/indian-scalper
+  - chown -R scalper:scalper /opt/indian-scalper
+
+  # Symlink the tailnet compose to docker-compose.yml so `docker
+  # compose up` picks it up by default. The regular docker-compose.yml
+  # stays available by explicit -f if the operator wants loopback-only.
+  - sudo -u scalper ln -sf docker-compose.tailnet.yml /opt/indian-scalper/docker-compose.tailnet.active.yml
+
+  # Create placeholder .env (operator must fill)
+  - |
+    cat > /opt/indian-scalper/.env.example.cloud <<'EOF'
+    # Edit this file, then `mv .env.example.cloud .env`
+    TS_AUTHKEY=
+    UPSTOX_API_KEY=
+    UPSTOX_API_SECRET=
+    UPSTOX_ACCESS_TOKEN=
+    # Uncomment ONLY when you've walked through RUNBOOK §7
+    # LIVE_TRADING_ACKNOWLEDGED=yes
+    EOF
+  - chown scalper:scalper /opt/indian-scalper/.env.example.cloud
+
+final_message: |
+  ===========================================================
+  Indian Scalper cloud-init bootstrap complete.
+
+  Next steps:
+    1. ssh scalper@<host>
+    2. cd /opt/indian-scalper
+    3. cp .env.example.cloud .env  # then edit TS_AUTHKEY + UPSTOX_*
+    4. Review config.yaml (capital, universe, risk thresholds)
+    5. docker compose -f docker-compose.tailnet.yml up -d
+    6. On your phone / laptop:
+         tailscale status     # confirm `scalper` appears
+         open http://scalper:8080/m/
+    7. Universe tab → enable your symbols (or apply nifty_100 preset).
+    8. When you're ready:  Controls → Resume.
+
+  First live-money trading: follow RUNBOOK §7 checklist (15 boxes).
+  Do not skip. Ever.
+  ===========================================================

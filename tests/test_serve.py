@@ -209,3 +209,82 @@ def test_dockerignore_excludes_state_and_vcs() -> None:
     text = (REPO_ROOT / ".dockerignore").read_text()
     for entry in (".venv/", "data/", "logs/", ".git/", "__pycache__/", "config.yaml", ".env"):
         assert entry in text, f"missing {entry!r} from .dockerignore"
+
+
+# ---------------------------------------------------------------- #
+# D12 Session 4 — tailnet compose + cloud-init                      #
+# ---------------------------------------------------------------- #
+
+def test_tailnet_compose_has_tailscale_sidecar() -> None:
+    """Pi / cloud deployment requires a tailscale sidecar so the app
+    container can share its netns and bind only on the tailnet IP."""
+    text = (REPO_ROOT / "docker-compose.tailnet.yml").read_text()
+    # Tailscale service defined with the expected capabilities.
+    assert "tailscale/tailscale:latest" in text
+    assert "net_admin" in text
+    assert "sys_module" in text
+    assert "TS_AUTHKEY" in text
+
+
+def test_tailnet_compose_scalper_shares_tailscale_netns() -> None:
+    """The whole point — scalper has network_mode: service:tailscale
+    so 0.0.0.0:8080 only reaches the tailnet, not the public internet."""
+    text = (REPO_ROOT / "docker-compose.tailnet.yml").read_text()
+    assert "network_mode: service:tailscale" in text
+    # No ports: stanza — Tailscale IS the exposure mechanism.
+    scalper_section = text[text.index("  scalper:"):]
+    # Defensive: confirm there's no plain-port publish on the scalper
+    # service (comments and the tailscale section don't have one either).
+    # We just grep for `- "127.0.0.1:8080:8080"` / `- "0.0.0.0:8080:8080"`
+    # and assert neither.
+    assert '"127.0.0.1:8080:8080"' not in scalper_section
+    assert '"0.0.0.0:8080:8080"' not in scalper_section
+
+
+def test_tailnet_compose_depends_on_tailscale_healthy() -> None:
+    """Scalper mustn't start before tailscale is up, or we'll bind to
+    an interface that doesn't exist yet."""
+    text = (REPO_ROOT / "docker-compose.tailnet.yml").read_text()
+    assert "condition: service_healthy" in text
+    assert "depends_on:" in text
+
+
+def test_cloud_init_creates_nonroot_user_and_firewall() -> None:
+    """cloud-init file should spin up a scalper user (not root) and
+    block inbound ports so nothing public gets exposed by mistake."""
+    text = (REPO_ROOT / "deploy" / "cloud-init" / "indian-scalper.yaml").read_text()
+    assert "- name: scalper" in text
+    # UFW default-deny + explicit SSH + Tailscale only.
+    assert "ufw default deny incoming" in text
+    assert "ufw allow ssh" in text
+    assert "ufw allow 41641/udp" in text  # Tailscale STUN
+    # 8080 must NOT be opened publicly.
+    assert "ufw allow 8080" not in text
+
+
+def test_cloud_init_refuses_passwordless_user_without_ssh_key() -> None:
+    """ssh_authorized_keys is an empty list in the shipped template
+    with a comment telling the operator to fill it. If someone removes
+    the placeholder we want to notice — cloud-init itself will refuse
+    to create a passwordless user with no key."""
+    text = (REPO_ROOT / "deploy" / "cloud-init" / "indian-scalper.yaml").read_text()
+    assert "ssh_authorized_keys: []" in text
+    assert "REPLACE" in text  # the reminder comment
+
+
+def test_cloud_init_never_enables_live_mode_automatically() -> None:
+    """The placeholder .env ships LIVE_TRADING_ACKNOWLEDGED commented
+    out. Automating live-mode opt-in would be catastrophic."""
+    text = (REPO_ROOT / "deploy" / "cloud-init" / "indian-scalper.yaml").read_text()
+    # The line should appear only as a commented hint, never uncommented.
+    lines = [
+        line for line in text.splitlines()
+        if "LIVE_TRADING_ACKNOWLEDGED" in line
+    ]
+    assert lines, "expected at least one LIVE_TRADING_ACKNOWLEDGED mention"
+    for line in lines:
+        stripped = line.lstrip()
+        # Either a yaml comment or shell comment.
+        assert stripped.startswith("#") or stripped.startswith("# "), (
+            f"uncommented LIVE_TRADING_ACKNOWLEDGED in cloud-init: {line!r}"
+        )

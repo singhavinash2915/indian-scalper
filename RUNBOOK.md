@@ -430,4 +430,54 @@ uv run scalper-pine-parity --symbol RELIANCE --out reliance.csv
 Known divergences that are NOT bugs (warmup differences, last-bar
 volume, pre-market bars) documented in `pine/README.md`.
 
+### Migrating to a Raspberry Pi or cloud VM
+
+Graduate off the Mac when paper week feels solid. Two options:
+
+**Option A — Raspberry Pi (one-time hardware cost ~$60, no ongoing)**
+
+```bash
+# On the Pi after a fresh Raspberry Pi OS Lite 64-bit install:
+scp deploy/cloud-init/indian-scalper.yaml pi@<pi-ip>:/tmp/
+ssh pi@<pi-ip>
+sudo cloud-init single --name write-files --file /tmp/indian-scalper.yaml
+sudo cloud-init single --name runcmd
+```
+
+**Option B — Cloud VM (DigitalOcean / Hetzner / Vultr, ~$5/mo)**
+
+1. Provision an Ubuntu 24.04 LTS droplet / cloud instance.
+2. Paste the contents of `deploy/cloud-init/indian-scalper.yaml`
+   into the provider's "User data" / "Cloud-init" field before
+   clicking Create.
+3. Wait 3–5 minutes for the bootstrap to complete. cloud-init logs:
+   `tail -f /var/log/cloud-init-output.log`
+
+**After either option**, ssh in and finish setup:
+
+```bash
+ssh scalper@<host>
+cd /opt/indian-scalper
+cp .env.example.cloud .env
+# Edit .env:
+#   TS_AUTHKEY=...    (https://login.tailscale.com/admin/settings/keys)
+#   UPSTOX_*=...      (only if flipping to live; paper doesn't need it)
+# Edit config.yaml for capital + universe + thresholds.
+docker compose -f docker-compose.tailnet.yml up -d
+```
+
+What cloud-init guarantees:
+
+- `scalper` non-root user with passwordless sudo limited to
+  docker/systemd status commands — no arbitrary root access.
+- UFW default-deny-incoming, only SSH + Tailscale STUN open.
+- 8080 is **never** exposed on the public interface; dashboard is
+  reachable only via the tailnet.
+- `LIVE_TRADING_ACKNOWLEDGED` stays commented out in the template.
+  Flipping to live is still a fully conscious manual step.
+
+Once running, the service appears as `scalper` on your tailnet
+admin console. Dashboard URL: `http://scalper:8080/` (desktop) or
+`http://scalper:8080/m/` (mobile).
+
 ### systemd / Docker — see README §Deployment

@@ -1,0 +1,96 @@
+# Tailnet-exposed deployment (Raspberry Pi / cloud VM).
+#
+# This compose file adds a sidecar Tailscale container that joins the
+# host to your tailnet; the scalper container shares the sidecar's
+# network namespace so the dashboard binds on the tailnet IP directly.
+# No port-forwarding, no public exposure, no basic-auth proxy needed.
+#
+# Usage:
+#   1. On the target host, create a Tailscale auth key at
+#      https://login.tailscale.com/admin/settings/keys (reusable,
+#      ephemeral). Store it in a .env next to this file as:
+#        TS_AUTHKEY=tskey-auth-XXXXXXXXXXXXX
+#   2. docker compose -f docker-compose.tailnet.yml up -d
+#   3. The hostname appears in your Tailscale admin console as
+#      "scalper". Reach the dashboard from any tailnet device:
+#        http://scalper:8080/
+#        http://scalper:8080/m/       (mobile)
+#
+# The Tailscale sidecar handles:
+#   - Joining the tailnet on boot.
+#   - Keeping the connection alive across Pi / VM reboots.
+#   - Accepting DNS for its own hostname inside the container network.
+#
+# The scalper container then:
+#   - Shares network_mode: service:tailscale (gets tailnet IP).
+#   - Binds 0.0.0.0:8080 — safe because the only way to reach it from
+#     outside the container is via the tailnet.
+#
+# This works identically on a Raspberry Pi (arm64), Hetzner CX11
+# (amd64), or a DigitalOcean droplet. The multi-arch Dockerfile
+# builds both architectures from the same source.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: scalper-tailscale
+    hostname: scalper
+    restart: unless-stopped
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_EXTRA_ARGS=--accept-routes
+    volumes:
+      - ./tailscale-state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - sys_module
+    healthcheck:
+      # `tailscale status` returns 0 when connected to the coordination
+      # server. Good enough gate.
+      test: ["CMD", "tailscale", "status", "--json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  scalper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: indian-scalper:latest
+    container_name: indian-scalper
+    restart: unless-stopped
+    depends_on:
+      tailscale:
+        condition: service_healthy
+    # Share the tailscale container's network stack. No `ports:` block
+    # — tailscale IS the network surface.
+    network_mode: service:tailscale
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config.yaml:/app/config.yaml:rw
+      - ./.env:/app/.env:ro
+    environment:
+      - TZ=Asia/Kolkata
+      # 0.0.0.0 is safe here: the only interface that exists in the
+      # tailscale container's netns is the tailnet one. No loopback to
+      # 127.0.0.1 from outside this pod.
+      - DASHBOARD_HOST=0.0.0.0
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          r = urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)
+          sys.exit(0 if r.status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
