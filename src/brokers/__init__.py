@@ -15,6 +15,8 @@ from brokers.base import (
     Segment,
     Side,
 )
+from brokers.paper import PaperBroker
+from brokers.upstox import UpstoxBroker
 
 __all__ = [
     "BrokerBase",
@@ -22,7 +24,9 @@ __all__ = [
     "Instrument",
     "Order",
     "OrderType",
+    "PaperBroker",
     "Position",
     "Segment",
     "Side",
+    "UpstoxBroker",
 ]

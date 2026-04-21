@@ -6,6 +6,64 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 9 — UpstoxBroker (live broker, feature-parity with PaperBroker)
+
+- **feat(brokers):** `src/brokers/upstox.py` — `UpstoxBroker`
+  implementing every `BrokerBase` method via the upstox-python-sdk v2
+  APIs. Constructor accepts injected API objects so tests never touch
+  the real SDK; `_init_sdk()` is the production-only path that reads
+  `UPSTOX_ACCESS_TOKEN` from the env var named in `config.yaml`.
+- **feat(brokers):** every SDK call is wrapped with a tenacity retry
+  decorator — `stop_after_attempt(3)` + exponential backoff (min=1s,
+  max=8s). `_is_retryable(exc)` retries on network errors
+  (ConnectionError / TimeoutError / OSError) and Upstox `ApiException`
+  with HTTP ≥ 500 or 429; fails fast on any other 4xx (bad request,
+  auth, not-found).
+- **feat(brokers):** `place_order` maps our `Side` / `OrderType` to
+  Upstox's string codes, builds a `PlaceOrderRequest` (product=I
+  intraday by default), persists the resulting order + audit row to
+  `StateStore`. `modify_order` resolves missing fields from the cached
+  order so callers can supply a partial update (the SDK rejects
+  `None` on validity / price / order_type / trigger_price).
+  `cancel_order` flips the stored status to `CANCELLED`.
+- **feat(brokers):** `get_positions`, `get_funds`, `get_ltp`,
+  `get_candles` parse the SDK's model/dict hybrid responses through
+  `_extract_data` + `_field` helpers that tolerate both shapes.
+  `_parse_candle_response` handles epoch-seconds + ISO-string +
+  native-datetime timestamps.
+- **feat(brokers):** symbol → Upstox `instrument_key` (`NSE_EQ|{isin}`)
+  via a pluggable `key_resolver`. Default resolver reads the ISIN
+  column InstrumentMaster already stores; callers can inject their
+  own for F&O keys.
+- **feat(brokers):** local kill switch via `StateStore.kv` flag — same
+  API as PaperBroker, so the dashboard halts entries identically in
+  live mode. Optional `update_server_kill_switch(segment, on)` also
+  flips Upstox's server-side segment-level halt.
+- **feat(main):** `src/main.py` now constructs UpstoxBroker when
+  `broker: upstox` is set. Adds `_assert_live_mode_acknowledged`
+  guard — refuses to start in `mode: live` without
+  `LIVE_TRADING_ACKNOWLEDGED=yes` env var (PROMPT.md compliance) and
+  a terminal `LIVE` confirmation on a TTY. Scan-loop integration with
+  live Upstox is deliberately deferred (requires order-status polling
+  / websocket fills / bracket orders) — D9 ships the broker class +
+  safety gates, not live scan-loop execution.
+- **test(brokers):** 23 mock-based tests in `tests/test_upstox_broker.py`
+  covering:
+    * retry policy (server errors, rate-limit, network errors retried;
+      4xx not retried; retry+succeed flow; fail-fast flow),
+    * symbol → instrument_key resolution (ISIN lookup, unknown symbol,
+      custom resolver),
+    * place/cancel/modify order (request body shape, api_version,
+      partial modify merges with cached state, SL-M trigger_price
+      handling, non-positive-qty rejection),
+    * get_positions / get_funds / get_ltp / get_candles response
+      parsing (model + dict shapes, intraday endpoint routing,
+      unsupported interval rejection, empty LTP short-circuit,
+      zero-qty position filtering),
+    * kill-switch parity with PaperBroker + server-side ENABLE/DISABLE
+      mapping,
+    * constructor safety — missing env var raises.
+
 ### Deliverable 8 — FastAPI + HTMX dashboard
 
 - **feat(dashboard):** `src/dashboard/app.py` — `create_app(broker,
