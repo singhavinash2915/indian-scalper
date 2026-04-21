@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+{% set current_tab = "universe" %}
+{% block content %}
+
+<!-- Search + filters + bulk-action bar -->
+<div class="panel" style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+  <input type="search" id="u-search" placeholder="Search symbol…"
+         style="padding: 7px 10px; background: var(--bg); color: var(--fg);
+                border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+                width: 220px;">
+  <select id="u-segment"
+          style="padding: 7px 10px; background: var(--bg); color: var(--fg);
+                 border: 1px solid var(--border); border-radius: 6px; font-size: 13px;">
+    <option value="">All segments</option>
+    <option value="EQ">Equity</option>
+    <option value="FUT">Futures</option>
+    <option value="OPT">Options</option>
+  </select>
+  <label style="color: var(--muted); font-size: 12px;">
+    <input type="checkbox" id="u-enabled-only"> Enabled only
+  </label>
+  <div class="spacer"></div>
+
+  <!-- Bulk actions for checked rows -->
+  <button id="bulk-enable" class="ctrl-btn" disabled>Enable selected</button>
+  <button id="bulk-disable" class="ctrl-btn" disabled>Disable selected</button>
+  <button id="bulk-watch" class="ctrl-btn" disabled>Toggle watch-only</button>
+
+  <!-- Preset dropdown -->
+  <select id="u-preset"
+          style="padding: 7px 10px; background: var(--bg); color: var(--fg);
+                 border: 1px solid var(--border); border-radius: 6px; font-size: 13px;">
+    <option value="">Apply preset…</option>
+    <option value="none">none (disable all)</option>
+    <option value="all">all (enable all)</option>
+    <option value="nifty_50">nifty_50</option>
+    <option value="nifty_100">nifty_100</option>
+    <option value="nifty_next_50">nifty_next_50</option>
+    <option value="bank_nifty_only">bank_nifty_only</option>
+  </select>
+
+  <button id="u-add" class="ctrl-btn">+ Add symbol</button>
+</div>
+
+<!-- Universe table -->
+<div class="panel" id="universe-host"
+     hx-get="/partials/universe_table"
+     hx-trigger="load, every 10s, universe-changed from:body"
+     hx-include="#u-search, #u-segment, #u-enabled-only"
+     hx-swap="innerHTML">
+  <span class="empty">Loading universe…</span>
+</div>
+
+<!-- Bulk / add / preset confirm modal -->
+<div class="modal-backdrop" id="u-modal">
+  <div class="modal" role="dialog">
+    <h3 id="u-modal-title">Confirm</h3>
+    <div id="u-modal-body"></div>
+    <div id="u-modal-input-box" style="display: none;">
+      <label style="font-size: 12px; color: var(--muted);" id="u-modal-input-label">Symbol</label>
+      <input type="text" id="u-modal-input" autocomplete="off">
+    </div>
+    <div class="err" id="u-modal-err"></div>
+    <div class="actions">
+      <button id="u-modal-cancel">Cancel</button>
+      <button id="u-modal-confirm" class="danger">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // --- Universe tab client ---
+  (function() {
+    const host = document.getElementById('universe-host');
+    const search = document.getElementById('u-search');
+    const segSel = document.getElementById('u-segment');
+    const enabledOnly = document.getElementById('u-enabled-only');
+    const bulkEnable = document.getElementById('bulk-enable');
+    const bulkDisable = document.getElementById('bulk-disable');
+    const bulkWatch = document.getElementById('bulk-watch');
+    const presetSel = document.getElementById('u-preset');
+    const addBtn = document.getElementById('u-add');
+
+    const modal = document.getElementById('u-modal');
+    const modalTitle = document.getElementById('u-modal-title');
+    const modalBody = document.getElementById('u-modal-body');
+    const modalInputBox = document.getElementById('u-modal-input-box');
+    const modalInput = document.getElementById('u-modal-input');
+    const modalErr = document.getElementById('u-modal-err');
+    const modalCancel = document.getElementById('u-modal-cancel');
+    const modalConfirm = document.getElementById('u-modal-confirm');
+
+    let pending = null; // { kind, ...params, token }
+
+    // Re-trigger the table load whenever filters change.
+    function refresh() { htmx.trigger('#universe-host', 'universe-changed'); }
+    search.addEventListener('input', refresh);
+    segSel.addEventListener('change', refresh);
+    enabledOnly.addEventListener('change', refresh);
+
+    // Single-symbol toggle: prepare → apply, no modal.
+    async function doSingle(action, symbol, segment) {
+      const prep = await fetch(`/api/universe/${action}/prepare`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ symbol, segment }),
+      }).then(r => r.json().then(b => ({ok: r.ok, body: b})));
+      if (!prep.ok) { alert(prep.body.detail || 'prepare failed'); return; }
+      const res = await fetch(`/api/universe/${action}/apply`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ symbol, segment, token: prep.body.token }),
+      }).then(r => r.json().then(b => ({ok: r.ok, body: b})));
+      if (!res.ok) { alert(res.body.detail || 'apply failed'); return; }
+      document.body.dispatchEvent(new CustomEvent('universe-changed'));
+    }
+
+    // Event delegation for row-level toggles
+    host.addEventListener('change', ev => {
+      const cb = ev.target.closest('input[type=checkbox]');
+      if (!cb) return;
+      if (cb.dataset.action === 'toggle-enabled') {
+        doSingle('toggle', cb.dataset.symbol, cb.dataset.segment);
+      } else if (cb.dataset.action === 'toggle-watch') {
+        doSingle('watch_only_override', cb.dataset.symbol, cb.dataset.segment);
+      } else if (cb.dataset.action === 'select-row') {
+        updateBulkButtons();
+      }
+    });
+
+    function selectedRows() {
+      return Array.from(host.querySelectorAll(
+        'input[data-action="select-row"]:checked'
+      )).map(cb => ({symbol: cb.dataset.symbol, segment: cb.dataset.segment}));
+    }
+    function updateBulkButtons() {
+      const n = selectedRows().length;
+      [bulkEnable, bulkDisable, bulkWatch].forEach(b => b.disabled = n === 0);
+    }
+    host.addEventListener('htmx:afterSwap', updateBulkButtons);
+
+    function openModal(opts) {
+      pending = opts;
+      modalTitle.innerText = opts.title;
+      modalBody.innerText = opts.body || '';
+      modalInputBox.style.display = opts.input ? '' : 'none';
+      modalInput.value = '';
+      modalErr.innerText = '';
+      modalConfirm.disabled = false;
+      modal.classList.add('open');
+    }
+    function closeModal() { modal.classList.remove('open'); pending = null; }
+    modalCancel.addEventListener('click', closeModal);
+
+    // Bulk / preset / add use the confirm modal.
+    bulkEnable.addEventListener('click', () => beginBulk(true, null));
+    bulkDisable.addEventListener('click', () => beginBulk(false, null));
+    bulkWatch.addEventListener('click', () => beginBulk(null, true));
+
+    async function beginBulk(enabled, watch) {
+      const rows = selectedRows();
+      if (!rows.length) return;
+      const ops = rows.map(r => {
+        const op = { symbol: r.symbol, segment: r.segment };
+        if (enabled !== null) op.enabled = enabled;
+        if (watch !== null) op.watch_only_override = watch;
+        return op;
+      });
+      const prep = await fetch('/api/universe/bulk/prepare', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ operations: ops }),
+      }).then(r => r.json().then(b => ({ok: r.ok, body: b})));
+      if (!prep.ok) { alert(prep.body.detail || 'prepare failed'); return; }
+      openModal({
+        kind: 'bulk',
+        title: 'Confirm bulk update',
+        body: `${ops.length} symbol(s) will be modified: ` +
+              `enable=${prep.body.preview.enable}, disable=${prep.body.preview.disable}, ` +
+              `watch=${prep.body.preview.watch_changes}`,
+        token: prep.body.token,
+        operations: ops,
+      });
+    }
+
+    presetSel.addEventListener('change', async () => {
+      const preset = presetSel.value;
+      if (!preset) return;
+      const prep = await fetch('/api/universe/preset/prepare', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ preset }),
+      }).then(r => r.json().then(b => ({ok: r.ok, body: b})));
+      if (!prep.ok) { alert(prep.body.detail || 'prepare failed'); presetSel.value = ''; return; }
+      openModal({
+        kind: 'preset',
+        title: `Apply preset: ${preset}`,
+        body: preset === 'none' ? 'Disables every symbol.'
+              : preset === 'all' ? 'Enables every symbol in the universe.'
+              : 'Named-index presets need a shipped symbol list. This will likely 501.',
+        token: prep.body.token,
+        preset,
+      });
+    });
+
+    addBtn.addEventListener('click', () => openModal({
+      kind: 'add',
+      title: 'Add symbol to universe',
+      body: 'The ticker must already exist in the instruments master.',
+      input: true,
+    }));
+
+    modalConfirm.addEventListener('click', async () => {
+      if (!pending) return;
+      modalConfirm.disabled = true;
+      let payload, url;
+      if (pending.kind === 'bulk') {
+        url = '/api/universe/bulk/apply';
+        payload = { operations: pending.operations, token: pending.token };
+      } else if (pending.kind === 'preset') {
+        url = '/api/universe/preset/apply';
+        payload = { preset: pending.preset, token: pending.token };
+      } else if (pending.kind === 'add') {
+        const sym = modalInput.value.trim().toUpperCase();
+        if (!sym) { modalErr.innerText = 'Symbol required'; modalConfirm.disabled = false; return; }
+        // Two-step: prepare here (we needed the symbol), then apply.
+        const prep = await fetch('/api/universe/add/prepare', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ symbol: sym, segment: 'EQ' }),
+        }).then(r => r.json().then(b => ({ok: r.ok, body: b})));
+        if (!prep.ok) { modalErr.innerText = prep.body.detail || 'prepare failed'; modalConfirm.disabled = false; return; }
+        url = '/api/universe/add/apply';
+        payload = { symbol: sym, segment: 'EQ', token: prep.body.token };
+      }
+      const res = await fetch(url, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      }).then(r => r.json().then(b => ({ok: r.ok, body: b})));
+      if (!res.ok) { modalErr.innerText = res.body.detail || 'apply failed'; modalConfirm.disabled = false; return; }
+      closeModal();
+      presetSel.value = '';
+      document.body.dispatchEvent(new CustomEvent('universe-changed'));
+    });
+  })();
+</script>
+
+{% endblock %}

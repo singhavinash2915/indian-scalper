@@ -46,6 +46,24 @@
   header.topbar .meta { color: var(--muted); font-size: 12px; }
   main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
 
+  /* ---- Nav tabs (D11 Slice 2) ---- */
+  nav.tabs {
+    display: flex; gap: 2px; padding: 0 20px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  nav.tabs a {
+    padding: 10px 18px; color: var(--muted); text-decoration: none;
+    font-size: 13px; font-weight: 500;
+    border-bottom: 2px solid transparent;
+  }
+  nav.tabs a:hover { color: var(--fg); }
+  nav.tabs a.active {
+    color: var(--fg); border-bottom-color: var(--accent);
+  }
+  nav.tabs a.disabled {
+    color: var(--border); cursor: not-allowed;
+  }
+
   .grid { display: grid; gap: 16px; }
   .grid.kpis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 
@@ -188,8 +206,16 @@
 
 <header class="topbar">
   <h1>Indian Scalper</h1>
-  <div class="meta">Dashboard · HTMX polling</div>
+  <div class="meta">HTMX polling · no SPA · no auth</div>
 </header>
+
+{% set current_tab = current_tab|default('dashboard') %}
+<nav class="tabs">
+  <a href="/" class="{{ 'active' if current_tab == 'dashboard' else '' }}">Dashboard</a>
+  <a href="/universe" class="{{ 'active' if current_tab == 'universe' else '' }}">Universe</a>
+  <a class="disabled" title="Slice 3">Signals</a>
+  <a class="disabled" title="Slice 3+">Logs</a>
+</nav>
 
 <main>
   {% block content %}{% endblock %}

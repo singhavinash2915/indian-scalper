@@ -438,6 +438,237 @@ def test_every_control_action_appends_operator_audit(client: TestClient) -> None
 
 
 # ---------------------------------------------------------------- #
+# Universe endpoints (D11 Slice 2)                                  #
+# ---------------------------------------------------------------- #
+
+def test_universe_page_renders(client: TestClient) -> None:
+    r = client.get("/universe")
+    assert r.status_code == 200
+    html = r.text
+    assert 'id="universe-host"' in html
+    assert "+ Add symbol" in html
+    # Nav bar shows Universe active.
+    assert 'href="/universe"' in html
+
+
+def test_api_universe_empty_initial_state(client: TestClient) -> None:
+    r = client.get("/api/universe")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 0
+    assert body["entries"] == []
+    # Presets are always listed.
+    for p in ("none", "all", "nifty_50", "nifty_100"):
+        assert p in body["presets"]
+
+
+def test_api_universe_returns_seeded_entries(client: TestClient) -> None:
+    # Seed directly through the registry the dashboard owns.
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE", "TCS"])
+    body = client.get("/api/universe").json()
+    assert body["count"] == 2
+    symbols = {e["symbol"] for e in body["entries"]}
+    assert symbols == {"RELIANCE", "TCS"}
+    assert all(e["enabled"] for e in body["entries"])
+
+
+def test_universe_table_partial_renders_rows(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE"])
+    html = client.get("/partials/universe_table").text
+    assert "RELIANCE" in html
+    assert 'data-action="toggle-enabled"' in html
+    assert 'data-action="toggle-watch"' in html
+
+
+def test_universe_table_partial_search_filter(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE", "TCS", "INFY"])
+    html = client.get("/partials/universe_table?q=tcs").text
+    assert "TCS" in html
+    assert "RELIANCE" not in html
+    assert "INFY" not in html
+
+
+# ---- toggle ----
+
+def test_toggle_prepare_requires_existing_row(client: TestClient) -> None:
+    r = client.post(
+        "/api/universe/toggle/prepare", json={"symbol": "NOPE", "segment": "EQ"},
+    )
+    assert r.status_code == 404
+
+
+def test_toggle_flow_flips_enabled(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE"])
+
+    prep = client.post(
+        "/api/universe/toggle/prepare", json={"symbol": "RELIANCE", "segment": "EQ"},
+    ).json()
+    assert prep["preview"]["current"] is True
+    r = client.post(
+        "/api/universe/toggle/apply",
+        json={"symbol": "RELIANCE", "segment": "EQ", "token": prep["token"]},
+    )
+    assert r.status_code == 200
+    assert r.json()["enabled"] is False
+    assert reg.is_enabled("RELIANCE") is False
+
+
+def test_toggle_apply_rejects_stale_token(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE"])
+    r = client.post(
+        "/api/universe/toggle/apply",
+        json={"symbol": "RELIANCE", "segment": "EQ", "token": "999.deadbeef"},
+    )
+    assert r.status_code == 403
+
+
+def test_toggle_token_not_portable_across_symbols(client: TestClient) -> None:
+    """(action, target) binding: token minted for RELIANCE must NOT
+    verify against TCS."""
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE", "TCS"])
+    prep = client.post(
+        "/api/universe/toggle/prepare", json={"symbol": "RELIANCE", "segment": "EQ"},
+    ).json()
+    r = client.post(
+        "/api/universe/toggle/apply",
+        json={"symbol": "TCS", "segment": "EQ", "token": prep["token"]},
+    )
+    assert r.status_code == 403
+
+
+# ---- watch-only override ----
+
+def test_watch_only_override_flow(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE"])
+    prep = client.post(
+        "/api/universe/watch_only_override/prepare",
+        json={"symbol": "RELIANCE", "segment": "EQ"},
+    ).json()
+    r = client.post(
+        "/api/universe/watch_only_override/apply",
+        json={"symbol": "RELIANCE", "segment": "EQ", "token": prep["token"]},
+    )
+    assert r.status_code == 200
+    assert r.json()["watch_only_override"] is True
+    assert reg.has_watch_only_override("RELIANCE")
+
+
+# ---- add ----
+
+def test_add_rejects_unknown_symbol(client: TestClient) -> None:
+    r = client.post(
+        "/api/universe/add/prepare",
+        json={"symbol": "NOT_A_REAL_SYMBOL", "segment": "EQ"},
+    )
+    assert r.status_code == 400
+    assert "instruments master" in r.json()["detail"].lower()
+
+
+def test_add_rejects_existing_symbol(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE"])
+    r = client.post(
+        "/api/universe/add/prepare",
+        json={"symbol": "RELIANCE", "segment": "EQ"},
+    )
+    assert r.status_code == 409
+
+
+def test_add_flow_inserts_row(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    prep = client.post(
+        "/api/universe/add/prepare", json={"symbol": "TCS", "segment": "EQ"},
+    ).json()
+    r = client.post(
+        "/api/universe/add/apply",
+        json={"symbol": "TCS", "segment": "EQ", "token": prep["token"]},
+    )
+    assert r.status_code == 200
+    assert reg.is_enabled("TCS") is True
+
+
+# ---- bulk ----
+
+def test_bulk_flow_applies_operations(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE", "TCS", "INFY"])
+    ops = [
+        {"symbol": "RELIANCE", "enabled": False},
+        {"symbol": "TCS", "watch_only_override": True},
+    ]
+    prep = client.post("/api/universe/bulk/prepare", json={"operations": ops}).json()
+    r = client.post(
+        "/api/universe/bulk/apply",
+        json={"operations": ops, "token": prep["token"]},
+    )
+    assert r.status_code == 200
+    summary = r.json()["summary"]
+    assert summary["disabled"] == 1
+    assert summary["watch_set"] == 1
+    assert reg.is_enabled("RELIANCE") is False
+    assert reg.has_watch_only_override("TCS") is True
+
+
+# ---- preset ----
+
+def test_preset_none_disables_all(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE", "TCS"])
+    prep = client.post("/api/universe/preset/prepare", json={"preset": "none"}).json()
+    r = client.post(
+        "/api/universe/preset/apply",
+        json={"preset": "none", "token": prep["token"]},
+    )
+    assert r.status_code == 200
+    assert reg.enabled_symbols() == []
+
+
+def test_preset_not_implemented_returns_501(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE"])
+    prep = client.post(
+        "/api/universe/preset/prepare", json={"preset": "nifty_50"},
+    ).json()
+    r = client.post(
+        "/api/universe/preset/apply",
+        json={"preset": "nifty_50", "token": prep["token"]},
+    )
+    assert r.status_code == 501
+
+
+def test_preset_prepare_rejects_unknown(client: TestClient) -> None:
+    r = client.post("/api/universe/preset/prepare", json={"preset": "bogus"})
+    assert r.status_code == 400
+
+
+# ---- audit trail ----
+
+def test_universe_mutations_audit(client: TestClient) -> None:
+    reg = client.app.state.dashboard.universe_registry  # type: ignore[attr-defined]
+    reg.seed_if_empty(["RELIANCE"])
+
+    prep = client.post(
+        "/api/universe/toggle/prepare", json={"symbol": "RELIANCE", "segment": "EQ"},
+    ).json()
+    client.post(
+        "/api/universe/toggle/apply",
+        json={"symbol": "RELIANCE", "segment": "EQ", "token": prep["token"]},
+    )
+    audit = client.broker.store.load_operator_audit(limit=20)  # type: ignore[attr-defined]
+    actions = [r["action"] for r in audit]
+    assert "universe.toggle" in actions
+    web_rows = [r for r in audit if r["actor"] == "web"]
+    assert len(web_rows) >= 1
+
+
+# ---------------------------------------------------------------- #
 # Log tail                                                          #
 # ---------------------------------------------------------------- #
 

@@ -42,6 +42,7 @@ from brokers.paper import PaperBroker
 from config.settings import Settings
 from data.holidays import HolidayCalendar
 from data.instruments import InstrumentMaster
+from data.universe import UniverseRegistry
 from risk.circuit_breaker import (
     check_daily_loss_limit,
     check_drawdown_circuit,
@@ -112,9 +113,27 @@ class ScanContext:
     universe: list[str]
     instruments: InstrumentMaster
     calendar: HolidayCalendar | None = None
+    # D11 Slice 2: when set, the scan loop uses the registry as the
+    # live source of truth for "which symbols do we scan this tick"
+    # and "does this symbol have a per-symbol watch-only override".
+    # When None, falls back to ``universe`` — keeps older ScanContext
+    # callers (tests, pre-Slice-2 wiring) working.
+    universe_registry: UniverseRegistry | None = None
     # ``pending_stops`` maps order_id → (stop_loss, take_profit). Scan
     # loop populates it at entry; the next settle applies and clears.
     pending_stops: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+    def effective_universe(self) -> list[str]:
+        """Which symbols should the scan loop touch this tick?
+
+        Registry, when present AND populated, wins. When the table is
+        empty or no registry is attached, fall back to the static
+        ``universe`` list — lets tests and bootstrap paths work without
+        touching the DB.
+        """
+        if self.universe_registry is not None and self.universe_registry.count() > 0:
+            return self.universe_registry.enabled_symbols()
+        return list(self.universe)
 
 
 # ---------------------------------------------------------------- #
@@ -171,8 +190,10 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
         return report
 
     # 5. Fetch latest candles + settle pending orders for every symbol
-    #    that matters (universe ∪ currently-open).
-    symbols = set(ctx.universe) | {p.symbol for p in ctx.broker.get_positions()}
+    #    that matters (enabled-universe ∪ currently-open). Universe is
+    #    looked up fresh each tick so toggles from the dashboard take
+    #    effect immediately without a scheduler restart.
+    symbols = set(ctx.effective_universe()) | {p.symbol for p in ctx.broker.get_positions()}
     candles_by_symbol: dict[str, list] = {}
     for sym in symbols:
         try:
@@ -241,7 +262,7 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
         return report
 
     # 8. Per-symbol evaluation.
-    for sym in ctx.universe:
+    for sym in ctx.effective_universe():
         signal = _evaluate_symbol(ctx, sym, candles_by_symbol.get(sym), ts, trace_id)
         if signal:
             report.signals.append(signal)
@@ -343,6 +364,20 @@ def _evaluate_symbol(
     )
     if size.qty == 0:
         logger.debug("[{}] {} sized to zero: {}", trace_id, symbol, size.note)
+        return None
+
+    # Per-symbol watch-only override (D11 Slice 2): score is still
+    # computed (so Slice 3 signal-snapshot tables can record it) but
+    # no order flows. Useful for "I want to shadow INFY for a week
+    # before letting the bot trade it".
+    if (
+        ctx.universe_registry is not None
+        and ctx.universe_registry.has_watch_only_override(symbol)
+    ):
+        logger.info(
+            "[{}] {} score={}/8 watch_only_override — signal logged, no order",
+            trace_id, symbol, score.total,
+        )
         return None
 
     order = ctx.broker.place_order(

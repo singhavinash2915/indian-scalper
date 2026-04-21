@@ -6,6 +6,90 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 11 — Slice 2 — Universe picker
+
+- **schema(state):** ``universe_membership(symbol, segment, enabled,
+  watch_only_override, added_at, added_by, PK (symbol, segment))`` is
+  now the scheduler's source of truth for which symbols to scan.
+  Config provides the *initial* set (seeded on first run); the table
+  is authoritative thereafter.
+- **feat(data):** ``src/data/universe.py`` — ``UniverseRegistry`` DAO.
+  Surface: ``seed_if_empty`` (idempotent first-run seed),
+  ``list_entries`` / ``enabled_symbols`` / ``is_enabled`` /
+  ``has_watch_only_override`` (reads), ``toggle`` / ``set_enabled`` /
+  ``set_watch_only_override`` / ``add`` / ``bulk_update`` /
+  ``apply_preset`` (writes). ``add`` validates against the instruments
+  master — refuses unknown tickers so a typo can't silently create a
+  phantom row.
+- **feat(data):** watch-only *override* is a per-symbol flag orthogonal
+  to ``enabled``. When set, scan-loop still scores the symbol but
+  never places an order, even when global ``trade_mode = paper`` —
+  "I want to shadow INFY for a week before letting the bot trade it."
+- **feat(data):** presets. ``none`` disables every row; ``all`` enables
+  every row. The named-index presets (``nifty_50``, ``nifty_100``,
+  ``nifty_next_50``, ``bank_nifty_only``) raise
+  ``PresetNotImplementedError`` (dashboard returns 501) with a
+  pointer to the shipped-symbol-list follow-up.
+- **feat(scheduler):** ``ScanContext`` grows ``universe_registry:
+  UniverseRegistry | None``. Scan loop calls
+  ``ctx.effective_universe()`` which queries the registry every tick
+  (table > static list). When no registry is attached or the table
+  is empty, falls back to the ``universe: list[str]`` field — keeps
+  bootstrap and tests working.
+- **feat(scheduler):** ``_evaluate_symbol`` now consults
+  ``registry.has_watch_only_override(symbol)`` before ``place_order``;
+  when set, logs a ``watch_only_override — signal logged, no order``
+  line and returns without generating a SignalReport. Defense in
+  depth complements the global ``trade_mode`` check in the broker.
+- **feat(dashboard):** universe page at ``GET /universe`` with a nav
+  bar on every page (Dashboard | Universe | Signals-disabled |
+  Logs-disabled) for D11 Slice 3 to fill out.
+- **feat(dashboard):** universe endpoints (all mutations use the
+  existing HMAC confirm-token flow from Slice 0):
+    * ``GET /api/universe`` — JSON ``{count, presets, entries}``.
+      Each entry carries ``{symbol, segment, enabled,
+      watch_only_override, added_at, added_by, ltp, avg_turnover_cr?,
+      last_score?, last_scanned_at?}``. The last three are ``null``
+      placeholders until Slice 3 signal snapshots land.
+    * ``GET /partials/universe_table`` — HTMX-refreshed table with
+      search (``?q=``), segment filter, enabled-only filter.
+    * ``POST /api/universe/{toggle, watch_only_override, add, bulk,
+      preset}/{prepare, apply}`` — (action, target) HMAC tokens, same
+      pattern as mode-change in Slice 0. ``apply`` writes + audits;
+      ``prepare`` mints the token + returns a preview payload for
+      the UI to show in the confirm modal.
+    * Single-symbol mutations (toggle / watch-only override) flow
+      invisibly through prepare + apply on each click — no modal,
+      two quick round-trips. Bulk / preset / add use the confirm
+      modal.
+- **feat(serve):** ``build_context`` now seeds the universe table
+  from the instruments master on first init and attaches a live
+  ``UniverseRegistry`` to the scan context + the dashboard app.
+- **feat(templates):** ``universe.html`` — search box, segment
+  filter, bulk-action buttons (Enable / Disable / Toggle watch-only
+  for selected rows), preset dropdown, add-symbol modal.
+  ``partials/universe_table.html`` — sortable table with row-level
+  toggles and selection checkboxes. Nav bar CSS added to
+  ``base.html``.
+- **test(data):** 18 new tests in ``tests/test_universe.py`` — seed
+  idempotency, seed auditing, toggle round-trip, unknown-symbol
+  rejection, audit-row-per-mutation, add-upserts, bulk summary math +
+  one-audit-row-per-batch, preset none/all behaviour,
+  not-implemented presets, unknown-preset rejection,
+  cross-instance persistence.
+- **test(scheduler):** 4 new tests — registry-enabled universe drives
+  effective_universe, watch-only-override blocks entry even in paper
+  mode, mid-session toggle takes effect next tick, empty registry
+  falls back to static universe.
+- **test(dashboard):** 18 new tests — page renders with nav, ``GET
+  /api/universe`` empty + populated, search-filtered partial, toggle
+  prepare 404 on unknown row, toggle full flow, stale-token
+  rejection, (action, target) token-replay rejection across
+  symbols, watch-only-override full flow, add rejects unknown + 409
+  on existing + full-flow insert, bulk flow, preset ``none`` works,
+  named-index preset 501, unknown-preset 400, every mutation audits
+  as ``actor="web"``.
+
 ### Deliverable 11 — Slice 1 — Scheduler controls (pause / resume / kill / rearm)
 
 - **feat(scheduler):** ``run_tick`` now obeys a full state machine

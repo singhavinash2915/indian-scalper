@@ -32,6 +32,7 @@ from config.logging_config import setup_logging
 from config.settings import CONFIG_YAML_TEMPLATE, Settings
 from dashboard.app import create_app
 from data.instruments import InstrumentMaster
+from data.universe import UniverseRegistry
 from scheduler.market_hours import IST
 from scheduler.scan_loop import ScanContext, run_tick
 
@@ -67,9 +68,14 @@ def build_context(settings: Settings) -> tuple[ScanContext, PaperBroker]:
     )
     broker = PaperBroker(settings, db_path=db_path, instruments=instruments)
 
-    # Universe resolution — default to whatever is in the instruments
-    # table. Operators can override via a future config.yaml ``universe``
-    # block once the universe-builder lands.
+    # D11 Slice 2 — seed universe_membership from the instruments master
+    # on first init. Subsequent restarts preserve whatever toggles the
+    # operator made via the dashboard.
+    registry = UniverseRegistry(broker.store, instruments)
+    registry.seed_if_empty([i.symbol for i in instruments.filter()])
+
+    # The static ``universe`` list is the fallback used only when the
+    # membership table is empty. Scan loop prefers the registry.
     universe = [i.symbol for i in instruments.filter()]
 
     ctx = ScanContext(
@@ -77,6 +83,7 @@ def build_context(settings: Settings) -> tuple[ScanContext, PaperBroker]:
         broker=broker,
         universe=universe,
         instruments=instruments,
+        universe_registry=registry,
     )
     return ctx, broker
 
@@ -118,7 +125,11 @@ def main() -> None:
     )
 
     log_file = settings.raw.get("logging", {}).get("file", "logs/scalper.log")
-    app = create_app(broker, settings, log_file=log_file)
+    app = create_app(
+        broker, settings,
+        log_file=log_file,
+        universe_registry=ctx.universe_registry,
+    )
 
     dashboard_cfg = settings.raw.get("dashboard", {})
     # DASHBOARD_HOST env wins over config.yaml — Docker defaults to

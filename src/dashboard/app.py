@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -39,6 +40,12 @@ from brokers.trade_mode import (
 )
 from config.settings import Settings
 from dashboard.confirm import ConfirmTokenRegistry
+from data.universe import (
+    KNOWN_PRESETS,
+    PresetNotImplementedError,
+    UniverseRegistry,
+    UnknownSymbolError,
+)
 from risk.circuit_breaker import (
     peak_equity_from_curve,
     start_of_day_equity,
@@ -55,6 +62,7 @@ class DashboardState:
     settings: Settings
     log_file: Path | None
     confirm_tokens: ConfirmTokenRegistry
+    universe_registry: UniverseRegistry | None
 
 
 class ModePrepareBody(BaseModel):
@@ -70,19 +78,58 @@ class KillApplyBody(BaseModel):
     token: str
 
 
+# D11 Slice 2 — universe mutations
+class UniverseSingleBody(BaseModel):
+    symbol: str
+    segment: str = "EQ"
+
+
+class UniverseApplyBody(UniverseSingleBody):
+    token: str
+    value: bool | None = None  # for watch_only_override apply
+
+
+class UniverseBulkPrepBody(BaseModel):
+    operations: list[dict[str, Any]]
+
+
+class UniverseBulkApplyBody(UniverseBulkPrepBody):
+    token: str
+
+
+class UniversePresetBody(BaseModel):
+    preset: str
+
+
+class UniversePresetApplyBody(UniversePresetBody):
+    token: str
+
+
 def create_app(
     broker: PaperBroker,
     settings: Settings,
     log_file: str | Path | None = None,
+    universe_registry: UniverseRegistry | None = None,
 ) -> FastAPI:
-    """Build a FastAPI app bound to a live ``PaperBroker``."""
+    """Build a FastAPI app bound to a live ``PaperBroker``.
+
+    ``universe_registry`` is optional: when omitted the D11 Slice 2
+    universe endpoints still work by constructing a lazy registry over
+    the broker's store + instruments master — so the dashboard always
+    has a universe surface even if the caller forgot to pass one.
+    """
     app = FastAPI(title="Indian Scalper Dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+    if universe_registry is None:
+        universe_registry = UniverseRegistry(broker.store, broker.instruments)
+
     state = DashboardState(
         broker=broker,
         settings=settings,
         log_file=Path(log_file) if log_file else None,
         confirm_tokens=ConfirmTokenRegistry(),
+        universe_registry=universe_registry,
     )
     app.state.dashboard = state
 
@@ -320,6 +367,256 @@ def create_app(
                 "note": "scheduler will square off open positions + stop on next tick",
             }
         )
+
+    # ---------------- Universe (D11 Slice 2) ----------------
+
+    @app.get("/api/universe")
+    def api_universe(segment: str | None = None, enabled_only: bool = False) -> JSONResponse:
+        reg = state.universe_registry
+        assert reg is not None
+        entries = reg.list_entries(segment=segment, enabled_only=enabled_only)
+        ltp_cache = state.broker._ltp
+        return JSONResponse(
+            {
+                "count": len(entries),
+                "presets": list(KNOWN_PRESETS),
+                "entries": [
+                    {
+                        "symbol": e.symbol,
+                        "segment": e.segment,
+                        "enabled": e.enabled,
+                        "watch_only_override": e.watch_only_override,
+                        "added_at": e.added_at,
+                        "added_by": e.added_by,
+                        "ltp": ltp_cache.get(e.symbol),
+                        # Liquidity / score / last_scanned populated by
+                        # Slice 3 signal_snapshots — "—" placeholder.
+                        "avg_turnover_cr": None,
+                        "last_score": None,
+                        "last_scanned_at": None,
+                    }
+                    for e in entries
+                ],
+            }
+        )
+
+    @app.get("/universe", response_class=HTMLResponse)
+    def page_universe(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request,
+            "universe.html",
+            {"banner": "PAPER TRADING // NOT FINANCIAL ADVICE"},
+        )
+
+    @app.get("/partials/universe_table", response_class=HTMLResponse)
+    def universe_table_partial(
+        request: Request,
+        q: str = "",
+        segment: str | None = None,
+        enabled_only: bool = False,
+    ) -> HTMLResponse:
+        reg = state.universe_registry
+        assert reg is not None
+        entries = reg.list_entries(segment=segment, enabled_only=enabled_only)
+        if q:
+            ql = q.strip().lower()
+            entries = [e for e in entries if ql in e.symbol.lower()]
+        ltp_cache = state.broker._ltp
+        return templates.TemplateResponse(
+            request,
+            "partials/universe_table.html",
+            {
+                "entries": entries,
+                "ltp_cache": ltp_cache,
+                "presets": KNOWN_PRESETS,
+                "query": q,
+            },
+        )
+
+    # ---- toggle ----
+
+    @app.post("/api/universe/toggle/prepare")
+    def universe_toggle_prepare(body: UniverseSingleBody) -> JSONResponse:
+        reg = state.universe_registry
+        assert reg is not None
+        entry = reg.get(body.symbol, body.segment)
+        if entry is None:
+            raise HTTPException(404, f"{body.symbol}/{body.segment} not in universe")
+        target = f"{body.symbol}:{body.segment}"
+        token, expires_at = state.confirm_tokens.issue("universe_toggle", target)
+        return JSONResponse({
+            "token": token,
+            "expires_at": expires_at,
+            "preview": {
+                "symbol": body.symbol, "segment": body.segment,
+                "current": entry.enabled,
+                "next": not entry.enabled,
+            },
+        })
+
+    @app.post("/api/universe/toggle/apply")
+    def universe_toggle_apply(body: UniverseApplyBody) -> JSONResponse:
+        target = f"{body.symbol}:{body.segment}"
+        if not state.confirm_tokens.verify("universe_toggle", target, body.token):
+            raise HTTPException(403, "confirm token invalid or expired")
+        reg = state.universe_registry
+        assert reg is not None
+        try:
+            entry = reg.toggle(body.symbol, body.segment, actor="web")
+        except KeyError:
+            raise HTTPException(404, f"{body.symbol}/{body.segment} not in universe")
+        return JSONResponse({"ok": True, "enabled": entry.enabled})
+
+    # ---- watch-only override ----
+
+    @app.post("/api/universe/watch_only_override/prepare")
+    def universe_watch_prepare(body: UniverseSingleBody) -> JSONResponse:
+        reg = state.universe_registry
+        assert reg is not None
+        entry = reg.get(body.symbol, body.segment)
+        if entry is None:
+            raise HTTPException(404, f"{body.symbol}/{body.segment} not in universe")
+        target = f"{body.symbol}:{body.segment}"
+        token, expires_at = state.confirm_tokens.issue(
+            "universe_watch_only_override", target,
+        )
+        return JSONResponse({
+            "token": token,
+            "expires_at": expires_at,
+            "preview": {
+                "symbol": body.symbol, "segment": body.segment,
+                "current": entry.watch_only_override,
+                "next": not entry.watch_only_override,
+            },
+        })
+
+    @app.post("/api/universe/watch_only_override/apply")
+    def universe_watch_apply(body: UniverseApplyBody) -> JSONResponse:
+        target = f"{body.symbol}:{body.segment}"
+        if not state.confirm_tokens.verify(
+            "universe_watch_only_override", target, body.token,
+        ):
+            raise HTTPException(403, "confirm token invalid or expired")
+        reg = state.universe_registry
+        assert reg is not None
+        entry = reg.get(body.symbol, body.segment)
+        if entry is None:
+            raise HTTPException(404, f"{body.symbol}/{body.segment} not in universe")
+        # Flip the current value (matches the preview the prepare step
+        # generated). If the caller really wants absolute set, they can
+        # use /bulk.
+        new_value = not entry.watch_only_override
+        try:
+            out = reg.set_watch_only_override(
+                body.symbol, body.segment, new_value, actor="web",
+            )
+        except KeyError:
+            raise HTTPException(404, f"{body.symbol}/{body.segment} not in universe")
+        return JSONResponse({"ok": True, "watch_only_override": out.watch_only_override})
+
+    # ---- bulk ----
+
+    @app.post("/api/universe/bulk/prepare")
+    def universe_bulk_prepare(body: UniverseBulkPrepBody) -> JSONResponse:
+        ops = body.operations
+        token, expires_at = state.confirm_tokens.issue(
+            "universe_bulk", f"count:{len(ops)}",
+        )
+        enabled_count = sum(1 for o in ops if o.get("enabled") is True)
+        disabled_count = sum(1 for o in ops if o.get("enabled") is False)
+        watch_count = sum(1 for o in ops if "watch_only_override" in o)
+        return JSONResponse({
+            "token": token,
+            "expires_at": expires_at,
+            "preview": {
+                "op_count": len(ops),
+                "enable": enabled_count,
+                "disable": disabled_count,
+                "watch_changes": watch_count,
+            },
+        })
+
+    @app.post("/api/universe/bulk/apply")
+    def universe_bulk_apply(body: UniverseBulkApplyBody) -> JSONResponse:
+        target = f"count:{len(body.operations)}"
+        if not state.confirm_tokens.verify("universe_bulk", target, body.token):
+            raise HTTPException(403, "confirm token invalid or expired")
+        reg = state.universe_registry
+        assert reg is not None
+        summary = reg.bulk_update(body.operations, actor="web")
+        return JSONResponse({"ok": True, "summary": summary})
+
+    # ---- add ----
+
+    @app.post("/api/universe/add/prepare")
+    def universe_add_prepare(body: UniverseSingleBody) -> JSONResponse:
+        reg = state.universe_registry
+        assert reg is not None
+        # Fail fast if the instrument isn't known — saves an unnecessary
+        # confirm round-trip.
+        if state.broker.instruments.get(body.symbol) is None:
+            raise HTTPException(
+                400,
+                f"{body.symbol!r} not in instruments master — refresh it or "
+                "check the ticker",
+            )
+        if reg.get(body.symbol, body.segment) is not None:
+            raise HTTPException(
+                409, f"{body.symbol}/{body.segment} already in universe",
+            )
+        target = f"{body.symbol}:{body.segment}"
+        token, expires_at = state.confirm_tokens.issue("universe_add", target)
+        return JSONResponse({
+            "token": token,
+            "expires_at": expires_at,
+            "preview": {"symbol": body.symbol, "segment": body.segment},
+        })
+
+    @app.post("/api/universe/add/apply")
+    def universe_add_apply(body: UniverseApplyBody) -> JSONResponse:
+        target = f"{body.symbol}:{body.segment}"
+        if not state.confirm_tokens.verify("universe_add", target, body.token):
+            raise HTTPException(403, "confirm token invalid or expired")
+        reg = state.universe_registry
+        assert reg is not None
+        try:
+            entry = reg.add(body.symbol, body.segment, actor="web")
+        except UnknownSymbolError as exc:
+            raise HTTPException(400, str(exc))
+        return JSONResponse({
+            "ok": True, "symbol": entry.symbol, "segment": entry.segment,
+        })
+
+    # ---- preset ----
+
+    @app.post("/api/universe/preset/prepare")
+    def universe_preset_prepare(body: UniversePresetBody) -> JSONResponse:
+        if body.preset not in KNOWN_PRESETS:
+            raise HTTPException(400, f"unknown preset {body.preset!r}")
+        token, expires_at = state.confirm_tokens.issue(
+            "universe_preset", body.preset,
+        )
+        return JSONResponse({
+            "token": token,
+            "expires_at": expires_at,
+            "preview": {"preset": body.preset},
+        })
+
+    @app.post("/api/universe/preset/apply")
+    def universe_preset_apply(body: UniversePresetApplyBody) -> JSONResponse:
+        if not state.confirm_tokens.verify(
+            "universe_preset", body.preset, body.token,
+        ):
+            raise HTTPException(403, "confirm token invalid or expired")
+        reg = state.universe_registry
+        assert reg is not None
+        try:
+            summary = reg.apply_preset(body.preset, actor="web")
+        except PresetNotImplementedError as exc:
+            raise HTTPException(501, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return JSONResponse({"ok": True, "summary": summary})
 
     # ---------------- Health ----------------
 

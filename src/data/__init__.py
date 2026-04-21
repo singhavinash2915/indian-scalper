@@ -11,14 +11,28 @@ from data.market_data import (
     candles_to_csv,
     df_to_candles,
 )
+from data.universe import (
+    IMPLEMENTED_PRESETS,
+    KNOWN_PRESETS,
+    PresetNotImplementedError,
+    UniverseEntry,
+    UniverseRegistry,
+    UnknownSymbolError,
+)
 
 __all__ = [
     "CandleFetcher",
     "DEFAULT_YAML_PATH",
     "FakeCandleFetcher",
     "HolidayCalendar",
+    "IMPLEMENTED_PRESETS",
     "InstrumentMaster",
+    "KNOWN_PRESETS",
     "NSE_EQUITY_MASTER_URL",
+    "PresetNotImplementedError",
+    "UniverseEntry",
+    "UniverseRegistry",
+    "UnknownSymbolError",
     "YFinanceFetcher",
     "build_synthetic_candles",
     "candles_from_csv",

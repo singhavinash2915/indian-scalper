@@ -1,0 +1,70 @@
+{# Universe table body — re-rendered on load, every 10s, and on the
+   `universe-changed` custom event after any mutation. #}
+{% if entries %}
+<div style="color: var(--muted); font-size: 12px; margin-bottom: 8px;">
+  {{ entries | length }} symbol(s){% if query %} · filter: "{{ query }}"{% endif %}
+</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width: 28px;"></th>
+      <th>Symbol</th>
+      <th>Seg</th>
+      <th>Enabled</th>
+      <th>Watch-only</th>
+      <th>LTP</th>
+      <th>Last Score</th>
+      <th>Last Scanned</th>
+      <th>Added by</th>
+      <th>Added at (IST)</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for e in entries %}
+    <tr>
+      <td>
+        <input type="checkbox"
+               data-action="select-row"
+               data-symbol="{{ e.symbol }}"
+               data-segment="{{ e.segment }}">
+      </td>
+      <td><b>{{ e.symbol }}</b></td>
+      <td>{{ e.segment }}</td>
+      <td>
+        <input type="checkbox"
+               data-action="toggle-enabled"
+               data-symbol="{{ e.symbol }}"
+               data-segment="{{ e.segment }}"
+               {% if e.enabled %}checked{% endif %}>
+      </td>
+      <td>
+        <input type="checkbox"
+               data-action="toggle-watch"
+               data-symbol="{{ e.symbol }}"
+               data-segment="{{ e.segment }}"
+               {% if e.watch_only_override %}checked{% endif %}>
+      </td>
+      <td>
+        {% set ltp = ltp_cache.get(e.symbol) %}
+        {% if ltp %}₹{{ "{:,.2f}".format(ltp) }}{% else %}—{% endif %}
+      </td>
+      <td class="empty">—</td>   {# populated by Slice 3 signal_snapshots #}
+      <td class="empty">—</td>
+      <td style="color: var(--muted); font-size: 11px;">{{ e.added_by }}</td>
+      <td style="color: var(--muted); font-size: 11px;">
+        {{ e.added_at.replace("T", " ")[:19] }}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">
+  {% if query %}
+    No symbols match "{{ query }}".
+  {% else %}
+    Universe is empty. Use <b>+ Add symbol</b> or run serve.py to seed from
+    the instruments master.
+  {% endif %}
+</div>
+{% endif %}

@@ -109,6 +109,18 @@ CREATE TABLE IF NOT EXISTS operator_audit (
     trace_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_operator_audit_ts ON operator_audit(ts);
+
+CREATE TABLE IF NOT EXISTS universe_membership (
+    symbol TEXT NOT NULL,
+    segment TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    watch_only_override INTEGER NOT NULL DEFAULT 0,
+    added_at TEXT NOT NULL,
+    added_by TEXT NOT NULL DEFAULT 'system',
+    PRIMARY KEY (symbol, segment)
+);
+CREATE INDEX IF NOT EXISTS idx_universe_enabled ON universe_membership(enabled);
+CREATE INDEX IF NOT EXISTS idx_universe_segment ON universe_membership(segment);
 """
 
 

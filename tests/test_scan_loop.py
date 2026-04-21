@@ -526,3 +526,89 @@ def test_drawdown_breach_squares_off_inline(tmp_path: Path) -> None:
     # Scheduler pinned to stopped + kill latched.
     assert ctx.broker.store.get_flag("scheduler_state") == "stopped"
     assert ctx.broker.is_kill_switch_on() is True
+
+
+# ---------------------------------------------------------------- #
+# D11 Slice 2 — universe registry integration                       #
+# ---------------------------------------------------------------- #
+
+def test_scan_loop_uses_enabled_symbols_from_registry(tmp_path: Path) -> None:
+    """Registry-backed universe: a disabled symbol is dropped from the
+    next tick; no signals for it."""
+    from data.universe import UniverseRegistry
+
+    ctx = _build_ctx(tmp_path, ["RELIANCE", "TCS"], {
+        "RELIANCE": _bullish_candles(),
+        "TCS": _bullish_candles(),
+    })
+    registry = UniverseRegistry(ctx.broker.store, ctx.instruments)
+    registry.seed_if_empty(["RELIANCE", "TCS"])
+    # Disable RELIANCE; only TCS should be scanned.
+    registry.set_enabled("RELIANCE", "EQ", False)
+    ctx.universe_registry = registry
+
+    assert ctx.effective_universe() == ["TCS"]
+    report = run_tick(ctx, T_ENTRY)
+    # Any signal should be for TCS only.
+    assert all(s.symbol == "TCS" for s in report.signals)
+
+
+def test_watch_only_override_blocks_entry_but_scores(tmp_path: Path) -> None:
+    """Per-symbol watch-only override: no entry order placed even though
+    global trade_mode=paper (via paper_mode() in _build_ctx)."""
+    from data.universe import UniverseRegistry
+
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    registry = UniverseRegistry(ctx.broker.store, ctx.instruments)
+    registry.seed_if_empty(["RELIANCE"])
+    registry.set_watch_only_override("RELIANCE", "EQ", True)
+    ctx.universe_registry = registry
+
+    report = run_tick(ctx, T_ENTRY)
+    # No signal (the SignalReport is generated only on a placed entry).
+    assert report.signals == []
+    # No orders placed, no positions opened.
+    assert ctx.broker.orders == {}
+    assert ctx.broker.get_positions() == []
+
+
+def test_registry_is_consulted_every_tick(tmp_path: Path) -> None:
+    """Mid-session toggle takes effect on the next tick with no
+    scheduler restart."""
+    from data.universe import UniverseRegistry
+
+    bullish = _bullish_candles()
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": bullish})
+    registry = UniverseRegistry(ctx.broker.store, ctx.instruments)
+    registry.seed_if_empty(["RELIANCE"])
+    ctx.universe_registry = registry
+
+    r1 = run_tick(ctx, T_ENTRY)
+    assert len(r1.signals) == 1
+
+    ctx.broker.fetcher._series["RELIANCE"].append(  # type: ignore[attr-defined]
+        Candle(
+            ts=bullish[-1].ts + timedelta(minutes=1),
+            open=bullish[-1].close, high=bullish[-1].close + 1,
+            low=bullish[-1].close - 0.5, close=bullish[-1].close + 0.5, volume=2000,
+        )
+    )
+
+    # Disable the symbol mid-session — next tick produces no signal.
+    registry.set_enabled("RELIANCE", "EQ", False)
+    r2 = run_tick(ctx, T_ENTRY + timedelta(minutes=1))
+    assert r2.signals == []
+
+
+def test_empty_registry_falls_back_to_static_universe(tmp_path: Path) -> None:
+    """When a registry is attached but the table is empty, scan loop
+    uses the static ``ctx.universe`` list — bootstrap scenario."""
+    from data.universe import UniverseRegistry
+
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    registry = UniverseRegistry(ctx.broker.store, ctx.instruments)
+    # No seed call — table is empty.
+    ctx.universe_registry = registry
+
+    assert registry.count() == 0
+    assert ctx.effective_universe() == ["RELIANCE"]
