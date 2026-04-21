@@ -421,6 +421,44 @@ def test_rearm_clears_kill_but_does_not_resume(client: TestClient) -> None:
     assert client.broker.is_kill_switch_on() is False  # type: ignore[attr-defined]
 
 
+def test_auto_resume_toggle_round_trip(client: TestClient) -> None:
+    """The auto-resume toggle persists to control_flags and surfaces
+    in /api/control/state."""
+    # Default: off.
+    state_before = client.get("/api/control/state").json()
+    assert state_before["auto_resume_enabled"] is False
+
+    r = client.post(
+        "/api/control/auto_resume", json={"enabled": True},
+    )
+    assert r.status_code == 200
+    assert r.json()["auto_resume_enabled"] is True
+
+    state_after = client.get("/api/control/state").json()
+    assert state_after["auto_resume_enabled"] is True
+
+
+def test_auto_resume_toggle_refuses_when_kill_tripped(client: TestClient) -> None:
+    """Enabling auto-resume with a tripped kill switch is a 409 — the
+    operator must rearm first, explicitly."""
+    client.broker.set_kill_switch(True, actor="test")  # type: ignore[attr-defined]
+    r = client.post(
+        "/api/control/auto_resume", json={"enabled": True},
+    )
+    assert r.status_code == 409
+    # Disabling is always allowed — no guard for turning it off.
+    r = client.post(
+        "/api/control/auto_resume", json={"enabled": False},
+    )
+    assert r.status_code == 200
+
+
+def test_controls_partial_renders_auto_resume_toggle(client: TestClient) -> None:
+    html = client.get("/partials/controls").text
+    assert 'id="auto-resume-toggle"' in html
+    assert "auto-resume" in html
+
+
 def test_every_control_action_appends_operator_audit(client: TestClient) -> None:
     """Each kv flag write goes through set_flag, which already audits.
     Rearm (via broker.set_kill_switch) must also leave an audit trail."""

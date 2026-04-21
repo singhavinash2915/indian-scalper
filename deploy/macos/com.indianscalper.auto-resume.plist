@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Auto-resume + auto-pause launchd agent.
+
+Strategy: fire every minute; the script's _within_fire_window check
+decides whether we're actually inside the ±2-minute IST target
+window. This works regardless of the Mac's local timezone (handles
+travel + DST cleanly) at a negligible cost (1440 cheap exits/day
+vs 2 meaningful actions).
+
+Fires `scalper-auto-resume --action resume` and
+`scalper-auto-resume --action pause`. The script itself gates on:
+  - opt-in flag (control_flags.auto_resume_enabled = "1")
+  - weekday
+  - NSE holiday calendar (resume only)
+  - kill_switch = armed (resume only)
+  - trade_mode in {paper, live} (resume only)
+
+Install:
+    cp deploy/macos/com.indianscalper.auto-resume.plist \
+       ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.indianscalper.auto-resume.plist
+
+Uninstall:
+    launchctl unload -w ~/Library/LaunchAgents/com.indianscalper.auto-resume.plist
+    rm ~/Library/LaunchAgents/com.indianscalper.auto-resume.plist
+
+Enable the flag once you're ready (via the dashboard Controls panel):
+  auto_resume_enabled = 1
+
+Disable without touching launchd:
+  auto_resume_enabled = 0   (launchd keeps firing but script exits fast)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.indianscalper.auto-resume</string>
+
+    <!-- One agent fires both actions in sequence every minute: the
+         fire-window check filters them. Simpler than two separate
+         agents; one launchctl load. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>cd /Users/avinashsingh/Documents/indian-scalper \
+                  &amp;&amp; /Users/avinashsingh/.local/bin/uv run scalper-auto-resume --action resume \
+                  ; /Users/avinashsingh/.local/bin/uv run scalper-auto-resume --action pause</string>
+    </array>
+
+    <!-- Fire every minute while running. launchd slop is up to ~10s. -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/avinashsingh/Library/Logs/indian-scalper-auto-resume.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/avinashsingh/Library/Logs/indian-scalper-auto-resume.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/avinashsingh/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <!-- IMPORTANT: deliberately omit TZ so the Mac's local TZ
+             drives `datetime.now()` calls inside the script. The
+             script converts to IST internally. -->
+    </dict>
+</dict>
+</plist>

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Indian Scalper — macOS LaunchAgent for the main `scalper` service.
+Starts at login, restarts on crash, logs to ~/Library/Logs/.
+
+Install:
+    1. Edit the ProgramArguments path below to match your clone location.
+    2. Copy to ~/Library/LaunchAgents/com.indianscalper.service.plist
+    3. launchctl load -w ~/Library/LaunchAgents/com.indianscalper.service.plist
+
+Uninstall:
+    launchctl unload -w ~/Library/LaunchAgents/com.indianscalper.service.plist
+    rm ~/Library/LaunchAgents/com.indianscalper.service.plist
+
+Logs: tail -f ~/Library/Logs/indian-scalper.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.indianscalper.service</string>
+
+    <!-- EDIT THIS: absolute path to your uv binary + repo working dir -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/avinashsingh/.local/bin/uv</string>
+        <string>run</string>
+        <string>scalper</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/avinashsingh/Documents/indian-scalper</string>
+
+    <!-- Start at login + restart on crash, but back off aggressively
+         so a broken config doesn't thrash the laptop. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/avinashsingh/Library/Logs/indian-scalper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/avinashsingh/Library/Logs/indian-scalper.log</string>
+
+    <!-- PATH is needed for uv to find python3 etc. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/avinashsingh/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>TZ</key>
+        <string>Asia/Kolkata</string>
+    </dict>
+
+    <!-- Don't run when laptop is on battery below 20% (macOS optional
+         guard; remove if you want unconditional start). -->
+    <key>LowPriorityIO</key>
+    <true/>
+</dict>
+</plist>

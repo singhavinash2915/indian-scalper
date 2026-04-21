@@ -350,6 +350,29 @@
       else if (action === 'rearm') simplePost('/api/control/rearm');
       else if (action === 'kill') startKill();
     });
+
+    // Auto-resume toggle. The controls partial re-renders every 2s
+    // so bind via delegation too.
+    document.addEventListener('change', async ev => {
+      const toggle = ev.target.closest('#auto-resume-toggle');
+      if (!toggle) return;
+      try {
+        const res = await fetch('/api/control/auto_resume', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ enabled: toggle.checked }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.detail || 'toggle failed');
+          toggle.checked = !toggle.checked;  // roll back
+          return;
+        }
+        document.body.dispatchEvent(new CustomEvent('controls-changed'));
+      } catch (e) {
+        alert(String(e));
+        toggle.checked = !toggle.checked;
+      }
+    });
   })();
 </script>
 

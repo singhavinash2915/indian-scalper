@@ -43,6 +43,7 @@ scalper-preflight = "preflight:main"
 scalper-bootstrap = "main:main"
 scalper-replay = "replay:main"
 scalper-tick = "tick_once:main"
+scalper-auto-resume = "auto_resume:main"
 
 # src/-layout with hatchling: every sub-package listed below gets
 # installed at the top level (sources = ["src"] strips the prefix) so
@@ -72,6 +73,7 @@ include = [
     "src/preflight.py",
     "src/replay.py",
     "src/tick_once.py",
+    "src/auto_resume.py",
 ]
 
 [tool.pytest.ini_options]

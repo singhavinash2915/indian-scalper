@@ -79,6 +79,10 @@ class KillApplyBody(BaseModel):
     token: str
 
 
+class AutoResumeToggleBody(BaseModel):
+    enabled: bool
+
+
 # D11 Slice 2 — universe mutations
 class UniverseSingleBody(BaseModel):
     symbol: str
@@ -335,6 +339,24 @@ def create_app(
                     "scheduler_state", "stopped",
                 ),
             }
+        )
+
+    @app.post("/api/control/auto_resume")
+    def control_auto_resume(body: AutoResumeToggleBody) -> JSONResponse:
+        """Flip the auto-resume opt-in flag. The launchd agent fires
+        every minute; this flag is what controls whether those fires
+        translate into scheduler state changes. Refuses to enable when
+        kill_switch is tripped (forces a conscious re-arm first)."""
+        target = "1" if body.enabled else "0"
+        if body.enabled and state.broker.is_kill_switch_on():
+            raise HTTPException(
+                409, "kill switch is tripped; rearm before enabling auto-resume",
+            )
+        state.broker.store.set_flag(
+            "auto_resume_enabled", target, actor="web",
+        )
+        return JSONResponse(
+            {"ok": True, "auto_resume_enabled": body.enabled},
         )
 
     @app.post("/api/control/kill/prepare")
@@ -884,6 +906,7 @@ def _control_state_context(state: DashboardState) -> dict:
         "can_resume": can_resume,
         "can_kill": can_kill,
         "can_rearm": can_rearm,
+        "auto_resume_enabled": store.get_flag("auto_resume_enabled", "0") == "1",
         "audit": store.load_operator_audit(limit=20),
     }
 

@@ -299,3 +299,59 @@ Intended debut of paper trading on real NSE market data.
 - 15:30 IST — market closes. Review the Signals tab + trade history
   + equity curve. Good day / bad day, log lessons learned.
 - Leave service running. Tomorrow you repeat §2.
+
+---
+
+## 9. Deployment
+
+### macOS launchd (laptop, always on while you're logged in)
+
+Starts the scheduler + dashboard at login; restarts on crash. Logs to
+`~/Library/Logs/indian-scalper.log`.
+
+```bash
+# 1. Edit deploy/macos/com.indianscalper.service.plist — replace each
+#    /Users/avinashsingh/... path if your clone is elsewhere.
+cp deploy/macos/com.indianscalper.service.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.indianscalper.service.plist
+
+# Verify
+launchctl list | grep indianscalper
+tail -f ~/Library/Logs/indian-scalper.log
+```
+
+Uninstall:
+```bash
+launchctl unload -w ~/Library/LaunchAgents/com.indianscalper.service.plist
+rm ~/Library/LaunchAgents/com.indianscalper.service.plist
+```
+
+### Auto-resume at 09:14 IST weekdays (optional)
+
+After a week or so of comfortable manual operation:
+
+```bash
+cp deploy/macos/com.indianscalper.auto-resume.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.indianscalper.auto-resume.plist
+```
+
+Then opt in via the dashboard: **Controls panel → `auto-resume 09:14
+IST` checkbox**. Flag persists across restarts.
+
+The agent fires `scalper-auto-resume` every minute; the script itself
+decides whether to act based on IST wall-clock + five guards:
+
+1. **Opt-in flag** set to `1`
+2. Today is a **weekday**
+3. Today is **not** an NSE holiday
+4. **Kill switch** is `armed`
+5. **Trade mode** is `paper` or `live`
+
+At 15:30 IST the same agent fires `--action pause` so the scheduler
+stops ticking after market close.
+
+Disable without touching launchd: uncheck the dashboard toggle. The
+agent still fires but the script exits immediately when
+`auto_resume_enabled=0`.
+
+### systemd / Docker — see README §Deployment

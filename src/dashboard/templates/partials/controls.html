@@ -19,4 +19,10 @@
     <button class="ctrl-btn" data-action="rearm"
             {% if not can_rearm %}disabled{% endif %}>Re-arm</button>
   </div>
+  <label style="color: var(--muted); font-size: 11px; margin-left: 12px; cursor: pointer;"
+         title="launchd fires 09:14 IST weekdays — auto-pauses 15:30. NSE holidays + kill-switch skip auto-resume. Off by default.">
+    <input type="checkbox" id="auto-resume-toggle"
+           {% if auto_resume_enabled %}checked{% endif %}>
+    auto-resume 09:14 IST
+  </label>
 </div>
