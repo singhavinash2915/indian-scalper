@@ -20,6 +20,7 @@ from brokers.paper import PaperBroker
 from config.settings import Settings
 from data.instruments import InstrumentMaster
 from data.market_data import df_to_candles
+from tests.fixtures import paper_mode
 from scheduler.scan_loop import ScanContext
 from tests.fixtures.synthetic import bullish_breakout_df
 
@@ -31,7 +32,7 @@ IST = ZoneInfo("Asia/Kolkata")
 # --------------------------------------------------------------------- #
 
 def _build(tmp_path: Path, min_score: int = 4) -> tuple[ScanContext, BacktestCandleFetcher]:
-    settings = Settings.from_template()
+    settings = paper_mode(Settings.from_template())
     settings.strategy.min_score = min_score
     # Shorter time-stop so the harness test can exit a stalled position
     # before the short candle series runs out.

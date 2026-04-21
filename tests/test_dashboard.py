@@ -19,6 +19,7 @@ from brokers.paper import PaperBroker
 from config.settings import Settings
 from dashboard.app import create_app
 from data.instruments import InstrumentMaster
+from tests.fixtures import paper_mode
 from data.market_data import FakeCandleFetcher
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -26,7 +27,7 @@ T0 = datetime(2026, 4, 21, 10, 0, tzinfo=IST)
 
 
 def _seeded_broker(tmp_path: Path) -> tuple[PaperBroker, Settings]:
-    settings = Settings.from_template()
+    settings = paper_mode(Settings.from_template())
     instruments = InstrumentMaster(
         db_path=tmp_path / "instruments.db",
         cache_dir=tmp_path / "instruments_cache",
@@ -197,6 +198,98 @@ def test_action_unkill_clears_flag(client: TestClient) -> None:
     r = client.post("/actions/unkill")
     assert r.json()["kill_switch"] is False
     assert client.broker.is_kill_switch_on() is False  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------- #
+# Trade-mode endpoints (D11 Slice 0)                                #
+# ---------------------------------------------------------------- #
+
+def test_api_mode_returns_current_mode(client: TestClient) -> None:
+    # Test client fixture uses paper_mode() so start state is paper.
+    r = client.get("/api/mode")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "paper"
+    assert "watch_only" in body["modes"]
+    assert "live" in body["modes"]
+
+
+def test_mode_pill_partial_renders_active_button(client: TestClient) -> None:
+    html = client.get("/partials/mode_pill").text
+    assert "PAPER" in html
+    assert 'data-target="watch_only"' in html
+    assert 'data-target="paper"' in html
+    assert 'data-target="live"' in html
+    # The paper button is marked active; live is disabled without env ack.
+    assert "mode-btn active mode-paper" in html
+    assert "disabled" in html  # live is disabled without LIVE_TRADING_ACKNOWLEDGED
+
+
+def test_mode_prepare_returns_token_and_context(client: TestClient) -> None:
+    r = client.post("/api/mode/prepare", json={"target": "watch_only"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["current_mode"] == "paper"
+    assert body["target_mode"] == "watch_only"
+    assert body["token"]
+    assert body["expires_at"] > 0
+    assert body["open_positions_count"] == 0
+    assert body["requires_typed_confirm"] is False
+
+
+def test_mode_prepare_rejects_invalid_target(client: TestClient) -> None:
+    r = client.post("/api/mode/prepare", json={"target": "not_a_mode"})
+    assert r.status_code == 400
+
+
+def test_mode_prepare_refuses_live_without_env_ack(client: TestClient, monkeypatch) -> None:
+    monkeypatch.delenv("LIVE_TRADING_ACKNOWLEDGED", raising=False)
+    r = client.post("/api/mode/prepare", json={"target": "live"})
+    assert r.status_code == 400
+    assert "LIVE_TRADING_ACKNOWLEDGED" in r.json()["detail"]
+
+
+def test_mode_prepare_allows_live_with_env_ack(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setenv("LIVE_TRADING_ACKNOWLEDGED", "yes")
+    r = client.post("/api/mode/prepare", json={"target": "live"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["requires_typed_confirm"] is True
+    # Warnings flag the LIVE confirmation step.
+    assert any("LIVE" in w for w in body["warnings"])
+
+
+def test_mode_apply_flips_trade_mode(client: TestClient) -> None:
+    prep = client.post("/api/mode/prepare", json={"target": "watch_only"}).json()
+    r = client.post("/api/mode/apply", json={"target": "watch_only", "token": prep["token"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["current_mode"] == "watch_only"
+    assert body["previous_mode"] == "paper"
+    # Persisted.
+    assert client.broker.store.get_flag("trade_mode") == "watch_only"  # type: ignore[attr-defined]
+
+
+def test_mode_apply_rejects_stale_token(client: TestClient) -> None:
+    r = client.post("/api/mode/apply", json={"target": "paper", "token": "123.deadbeef"})
+    assert r.status_code == 403
+
+
+def test_mode_apply_rejects_token_from_different_target(client: TestClient) -> None:
+    prep = client.post("/api/mode/prepare", json={"target": "watch_only"}).json()
+    # Re-use the watch_only token to try to flip to paper — must fail.
+    r = client.post("/api/mode/apply", json={"target": "paper", "token": prep["token"]})
+    assert r.status_code == 403
+
+
+def test_mode_apply_writes_audit_row(client: TestClient) -> None:
+    prep = client.post("/api/mode/prepare", json={"target": "watch_only"}).json()
+    client.post("/api/mode/apply", json={"target": "watch_only", "token": prep["token"]})
+    audit = client.broker.store.load_operator_audit(limit=10)  # type: ignore[attr-defined]
+    latest = next(r for r in audit if r["action"] == "flag_set:trade_mode")
+    assert latest["actor"] == "web"
+    assert latest["payload"]["value"] == "watch_only"
+    assert latest["payload"]["previous"] == "paper"
 
 
 # ---------------------------------------------------------------- #

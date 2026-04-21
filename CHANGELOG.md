@@ -6,6 +6,97 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 11 — Slice 0 — Trade mode (watch_only / paper / live)
+
+- **feat(trade-mode):** `src/brokers/trade_mode.py` — single module that
+  owns the trade-mode vocabulary, the env-var gate, and
+  ``check_and_maybe_reject`` (shared between PaperBroker and
+  UpstoxBroker). Reads ``trade_mode`` from ``control_flags`` at every
+  ``place_order`` call — no caching, so a UI flip takes effect on the
+  next tick with no scheduler restart.
+- **feat(brokers):** defense-in-depth enforcement. When
+  ``trade_mode = watch_only`` and ``intent="entry"``, both brokers
+  log a warning, append an ``operator_audit`` row
+  (``order_blocked_by_trade_mode``), and return a synthetic Order with
+  ``status = "REJECTED_BY_TRADE_MODE"`` and id ``blocked-<uuid>``.
+  Never raises — the scheduler treats the rejection as a non-fill and
+  moves on. Exits (``intent="exit"``) flow through so stops / trails /
+  EOD square-off keep managing existing positions after a mid-day
+  flip to watch_only.
+- **feat(config):** ``runtime.initial_trade_mode`` config key (defaults
+  to ``watch_only`` per PROMPT). Used only on first DB init via
+  ``StateStore.ensure_initial_flags`` — after that, the dashboard is
+  the source of truth.
+- **feat(broker-init):** every ``PaperBroker`` / ``UpstoxBroker``
+  construction seeds ``control_flags`` (``trade_mode``,
+  ``scheduler_state="stopped"``, ``kill_switch="armed"``) if absent.
+  Existing flags are preserved across restarts.
+- **feat(dashboard):** confirm-token helper
+  (``src/dashboard/confirm.py``) — HMAC-signed ``{exp}.{sig}`` tokens
+  bound to ``(action, target)`` with a 30 s TTL. Per-process secret
+  — dashboard restart invalidates outstanding tokens (fine — they
+  expire quickly anyway).
+- **feat(dashboard):** ``GET /api/mode`` / ``POST /api/mode/prepare``
+  / ``POST /api/mode/apply`` endpoints. ``prepare`` mints a token +
+  returns ``{current_mode, target_mode, open_positions_count,
+  warnings, requires_typed_confirm}``. ``apply`` verifies the token
+  then writes the flag via ``StateStore.set_flag`` (which audits
+  automatically). Both refuse ``live`` without
+  ``LIVE_TRADING_ACKNOWLEDGED=yes`` in the environment.
+- **feat(dashboard):** ``GET /partials/mode_pill`` — colour-coded
+  three-way switch (blue watch-only / amber paper / red blinking
+  live). KPI partial + dashboard page poll every 3 s; a
+  ``mode-changed`` event after ``apply`` triggers an immediate
+  refresh. Confirm modal handles prepare → apply flow and enforces
+  typed ``LIVE`` confirmation for live mode.
+- **test(trade-mode):** 18 tests in ``tests/test_trade_mode.py`` —
+  first-run defaults, config-driven seed, invalid-mode fallback,
+  persistence across restarts, paper + Upstox entry blocking in
+  watch_only, exit-through for existing-position management,
+  default-entry-intent safety, mode reversibility, audit-row content,
+  env-var gate, ``check_and_maybe_reject`` unit tests.
+- **test(confirm-tokens):** 8 tests in
+  ``tests/test_confirm_tokens.py`` — round-trip, (action, target)
+  binding, TTL expiry, tampered signature rejection, malformed
+  tokens, per-registry secret isolation, non-positive TTL guard.
+- **test(dashboard):** 10 new tests for the mode endpoints — current
+  mode, pill partial rendering, prepare-token shape, invalid target,
+  live without env ack / with env ack, apply flips the flag,
+  stale-token rejection, cross-target token-replay rejection, audit
+  row on apply.
+- **test(fixtures):** ``tests/fixtures/paper_mode()`` helper so tests
+  that expect trades to flow can opt into ``paper`` mode explicitly.
+
+### prep for D11 — StateStore control_flags + operator_audit
+
+No behaviour change visible to the existing 240 tests.
+
+- **schema(state):** ``control_flags(key PK, value, updated_at,
+  updated_by)`` and ``operator_audit(id PK, ts, actor, action,
+  payload_json, trace_id)`` added. Legacy ``kv`` table kept in
+  schema but no code writes to it any more.
+- **feat(state):** ``set_flag(key, value, actor="system", *,
+  trace_id=None)`` writes to ``control_flags`` AND an
+  ``operator_audit`` row with action ``flag_set:{key}`` + payload
+  ``{value, previous}``. ``get_flag`` reads ``control_flags``.
+  ``load_control_flags``, ``ensure_initial_flags``,
+  ``append_operator_audit``, ``load_operator_audit`` added for the
+  Slice 0/1 dashboard needs.
+- **refactor(brokers):** ``set_kill_switch(on, actor="system")`` on
+  both brokers — value migrated from ``"1"`` / ``"0"`` to
+  ``"tripped"`` / ``"armed"``. External API unchanged.
+- **feat(brokers):** ``BrokerBase.place_order`` gains
+  ``intent: Literal["entry", "exit"] = "entry"``. Scan loop passes
+  ``intent="entry"`` from ``_evaluate_symbol`` and
+  ``intent="exit"`` from ``_close_position``. Default ``"entry"`` —
+  unannotated callers err on the side of blocking.
+- **refactor(scheduler):** scan loop only stashes ``pending_stops``
+  if the returned order's status is ``"PENDING"`` (guards against
+  Slice-0 rejections polluting the pending-stops dict).
+- **refactor(scheduler):** drawdown-circuit latch threads
+  ``actor="drawdown_circuit"``; dashboard kill/unkill actions thread
+  ``actor="web"``.
+
 ### Deliverable 10 — Dockerfile + systemd deployment
 
 - **feat(serve):** `src/serve.py` — single-process production entry

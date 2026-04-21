@@ -1,10 +1,27 @@
 {% extends "base.html" %}
 {% block content %}
 
+<!-- Trade-mode pill + three-way switch — polled every 3s -->
+<div class="panel" style="margin-bottom: 16px; display: flex; align-items: center; gap: 20px;">
+  <div style="color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;">
+    Trade mode
+  </div>
+  <div id="mode-pill-host"
+       hx-get="/partials/mode_pill"
+       hx-trigger="load, every 3s, mode-changed from:body"
+       hx-swap="innerHTML">
+    <span class="empty">Loading…</span>
+  </div>
+  <div class="spacer"></div>
+  <div style="color: var(--muted); font-size: 12px;">
+    Clicking a mode shows a confirm dialog. No change without explicit confirm.
+  </div>
+</div>
+
 <!-- KPIs — refresh every 5s -->
 <div id="kpis"
      hx-get="/partials/kpis"
-     hx-trigger="load, every 5s"
+     hx-trigger="load, every 5s, mode-changed from:body"
      hx-swap="innerHTML">
   <div class="panel"><span class="empty">Loading KPIs…</span></div>
 </div>
@@ -99,6 +116,109 @@
   }
   refreshEquity();
   setInterval(refreshEquity, 30_000);
+</script>
+
+<!-- Confirm modal for mode changes -->
+<div class="modal-backdrop" id="mode-modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mode-modal-title">
+    <h3 id="mode-modal-title">Confirm trade-mode change</h3>
+    <div id="mode-modal-body"></div>
+    <div class="warn-list" id="mode-modal-warnings"></div>
+    <div id="mode-modal-live-typebox" style="display: none;">
+      <label style="font-size: 12px; color: var(--muted);">
+        Type <b>LIVE</b> (all caps) to confirm:
+      </label>
+      <input type="text" id="mode-modal-live-input" autocomplete="off">
+    </div>
+    <div class="err" id="mode-modal-err"></div>
+    <div class="actions">
+      <button id="mode-modal-cancel">Cancel</button>
+      <button id="mode-modal-confirm" class="danger">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Wire up the mode-switch buttons. HTMX keeps the pill fresh; the JS
+  // below handles the prepare → confirm → apply flow.
+  (function() {
+    const modal = document.getElementById('mode-modal');
+    const bodyEl = document.getElementById('mode-modal-body');
+    const warnEl = document.getElementById('mode-modal-warnings');
+    const liveBox = document.getElementById('mode-modal-live-typebox');
+    const liveInput = document.getElementById('mode-modal-live-input');
+    const errEl = document.getElementById('mode-modal-err');
+    const cancelBtn = document.getElementById('mode-modal-cancel');
+    const confirmBtn = document.getElementById('mode-modal-confirm');
+
+    let pending = null; // { target, token, requires_typed_confirm }
+
+    function open(prepared, target) {
+      pending = { target, token: prepared.token,
+                  requires_typed_confirm: prepared.requires_typed_confirm };
+      bodyEl.innerText =
+        `Switch ${prepared.current_mode.toUpperCase()} → ${target.toUpperCase()}. ` +
+        `Open positions: ${prepared.open_positions_count}.`;
+      warnEl.innerHTML = '';
+      (prepared.warnings || []).forEach(w => {
+        const li = document.createElement('div'); li.innerText = '⚠ ' + w; warnEl.appendChild(li);
+      });
+      liveBox.style.display = prepared.requires_typed_confirm ? '' : 'none';
+      liveInput.value = '';
+      errEl.innerText = '';
+      confirmBtn.disabled = false;
+      modal.classList.add('open');
+      if (prepared.requires_typed_confirm) liveInput.focus();
+    }
+    function close() { modal.classList.remove('open'); pending = null; }
+
+    async function prepare(target) {
+      errEl.innerText = '';
+      try {
+        const res = await fetch('/api/mode/prepare', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ target }),
+        });
+        const data = await res.json();
+        if (!res.ok) { errEl.innerText = data.detail || 'prepare failed'; modal.classList.add('open'); return; }
+        open(data, target);
+      } catch (e) { errEl.innerText = String(e); modal.classList.add('open'); }
+    }
+
+    async function apply() {
+      if (!pending) return;
+      if (pending.requires_typed_confirm && liveInput.value !== 'LIVE') {
+        errEl.innerText = 'Type LIVE (all caps) to confirm'; return;
+      }
+      confirmBtn.disabled = true;
+      try {
+        const res = await fetch('/api/mode/apply', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ target: pending.target, token: pending.token }),
+        });
+        const data = await res.json();
+        if (!res.ok) { errEl.innerText = data.detail || 'apply failed'; confirmBtn.disabled = false; return; }
+        close();
+        // Refresh the mode pill and KPIs.
+        document.body.dispatchEvent(new CustomEvent('mode-changed'));
+      } catch (e) { errEl.innerText = String(e); confirmBtn.disabled = false; }
+    }
+
+    // Delegate clicks — the pill partial replaces its own DOM on polls,
+    // so bind at the host container level.
+    document.addEventListener('click', ev => {
+      const btn = ev.target.closest('.mode-btn');
+      if (!btn || btn.disabled) return;
+      const target = btn.dataset.target;
+      if (!target) return;
+      if (btn.classList.contains('active')) return;  // already in that mode
+      prepare(target);
+    });
+    cancelBtn.addEventListener('click', close);
+    confirmBtn.addEventListener('click', apply);
+  })();
 </script>
 
 {% endblock %}

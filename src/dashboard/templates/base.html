@@ -85,6 +85,51 @@
   }
   .flex { display: flex; gap: 8px; align-items: center; }
   .spacer { flex: 1; }
+
+  /* ---- Trade-mode pill + three-way switch (D11 Slice 0) ---- */
+  .mode-container { display: flex; align-items: center; gap: 14px; }
+  .mode-pill {
+    display: inline-block; padding: 8px 14px; border-radius: 999px;
+    font-weight: 700; font-size: 12px; letter-spacing: 0.12em;
+    border: 1px solid var(--border);
+  }
+  .mode-watch { background: #0f2440; color: #79c0ff; border-color: #1f4d80; }
+  .mode-paper { background: #3a2e10; color: #f0b552; border-color: #6b5320; }
+  .mode-live  { background: #4a1414; color: #ffa7a7; border-color: #8b2222;
+                animation: blink 1.2s linear infinite; }
+  @keyframes blink { 50% { opacity: 0.55; } }
+  .mode-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .mode-btn {
+    background: var(--panel); color: var(--muted); border: none;
+    padding: 7px 12px; font-size: 12px; cursor: pointer; border-radius: 0;
+    border-right: 1px solid var(--border);
+  }
+  .mode-btn:last-child { border-right: none; }
+  .mode-btn:hover:not(:disabled) { background: var(--panel-2); color: var(--fg); }
+  .mode-btn.active { background: var(--accent); color: #0b0f15; font-weight: 600; }
+  .mode-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .mode-btn.mode-live.active { background: var(--bad); color: #fff; }
+  .mode-btn.mode-paper.active { background: var(--warn); color: #0b0f15; }
+
+  /* ---- Confirm modal ---- */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center; z-index: 50;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px; width: 460px; max-width: 90vw;
+  }
+  .modal h3 { margin: 0 0 10px; font-size: 16px; }
+  .modal .warn-list { color: var(--warn); font-size: 13px; margin: 8px 0; }
+  .modal .actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+  .modal input[type=text] {
+    width: 100%; padding: 8px 10px; margin-top: 6px;
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 6px; font-family: inherit;
+  }
+  .modal .err { color: var(--bad); font-size: 12px; margin-top: 6px; min-height: 16px; }
 </style>
 </head>
 <body>

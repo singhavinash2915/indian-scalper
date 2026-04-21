@@ -1,0 +1,22 @@
+{# Trade-mode pill + three-way switch. Polled every 3s by the
+   dashboard; mutations go through the confirm-modal JS below. #}
+{% set mode_class =
+    'mode-watch' if mode == 'watch_only'
+    else 'mode-paper' if mode == 'paper'
+    else 'mode-live' %}
+<div class="mode-container">
+  <div class="mode-pill {{ mode_class }}" id="mode-pill"
+       data-mode="{{ mode }}">
+    {% if mode == 'watch_only' %}WATCH ONLY{% elif mode == 'paper' %}PAPER{% else %}LIVE{% endif %}
+  </div>
+  <div class="mode-switch">
+    {% for m in modes %}
+      <button class="mode-btn {{ 'active' if m == mode else '' }} mode-{{ m }}"
+              data-target="{{ m }}"
+              {% if m == 'live' and not live_acknowledged %}disabled
+              title="Set LIVE_TRADING_ACKNOWLEDGED=yes in the env first"{% endif %}>
+        {% if m == 'watch_only' %}Watch{% elif m == 'paper' %}Paper{% else %}Live{% endif %}
+      </button>
+    {% endfor %}
+  </div>
+</div>

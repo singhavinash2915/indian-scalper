@@ -51,6 +51,7 @@ from brokers.base import (
     Segment,
     Side,
 )
+from brokers.trade_mode import check_and_maybe_reject
 from config.settings import Settings
 from data.instruments import InstrumentMaster
 from execution.state import StateStore
@@ -153,6 +154,7 @@ class UpstoxBroker(BrokerBase):
         self._db_path = Path(db_path or storage_cfg.get("db_path", "data/scalper.db"))
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self.store = StateStore(self._db_path)
+        _seed_control_flags(self.store, settings)
 
         self._key_resolver = key_resolver or self._default_key_resolver
 
@@ -276,9 +278,14 @@ class UpstoxBroker(BrokerBase):
         *,
         intent: Literal["entry", "exit"] = "entry",
     ) -> Order:
-        _ = intent  # trade-mode enforcement hooks in via Slice 0
         if qty <= 0:
             raise ValueError(f"qty must be positive, got {qty}")
+
+        rejection = check_and_maybe_reject(
+            self.store, symbol, qty, side, order_type, intent, "UpstoxBroker",
+        )
+        if rejection is not None:
+            return rejection
 
         from upstox_client import PlaceOrderRequest
 
@@ -525,4 +532,27 @@ def _parse_candle_response(raw: Any, lookback: int) -> list[Candle]:
         )
     candles.sort(key=lambda c: c.ts)
     return candles[-lookback:] if lookback > 0 else candles
+
+
+def _seed_control_flags(store: StateStore, settings: Settings) -> None:
+    """Same first-run seeding as PaperBroker — lives here to avoid
+    cross-module coupling between the two broker implementations."""
+    from brokers.trade_mode import DEFAULT_TRADE_MODE, VALID_TRADE_MODES
+
+    runtime_cfg = settings.raw.get("runtime", {}) or {}
+    initial_mode = runtime_cfg.get("initial_trade_mode", DEFAULT_TRADE_MODE)
+    if initial_mode not in VALID_TRADE_MODES:
+        logger.warning(
+            "runtime.initial_trade_mode={!r} invalid; falling back to {}",
+            initial_mode, DEFAULT_TRADE_MODE,
+        )
+        initial_mode = DEFAULT_TRADE_MODE
+    store.ensure_initial_flags(
+        {
+            "trade_mode": initial_mode,
+            "scheduler_state": "stopped",
+            "kill_switch": "armed",
+        },
+        actor="system_init",
+    )
 

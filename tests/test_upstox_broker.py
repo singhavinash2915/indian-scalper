@@ -21,6 +21,7 @@ from brokers.base import OrderType, Side
 from brokers.upstox import UPSTOX_API_VERSION, UpstoxBroker, _is_retryable
 from config.settings import Settings
 from data.instruments import InstrumentMaster
+from tests.fixtures import paper_mode
 
 
 # --------------------------------------------------------------------- #
@@ -39,7 +40,7 @@ def _seed_instruments(tmp_path: Path) -> InstrumentMaster:
 
 
 def _build_broker(tmp_path: Path, **api_mocks):
-    settings = Settings.from_template()
+    settings = paper_mode(Settings.from_template())
     instruments = _seed_instruments(tmp_path)
     apis = {
         "order_api": MagicMock(name="OrderApi"),

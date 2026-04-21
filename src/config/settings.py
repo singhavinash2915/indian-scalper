@@ -74,6 +74,12 @@ risk:
   eod_squareoff_intraday: true
   never_hold_options_overnight: true
 
+runtime:
+  # Seeded into control_flags.trade_mode on first DB init ONLY.
+  # After that, the dashboard's mode switch is the source of truth.
+  # Valid values: watch_only | paper | live.
+  initial_trade_mode: watch_only
+
 paper:
   slippage_pct: 0.05
   fill_on: next_candle_open      # next_candle_open | current_close

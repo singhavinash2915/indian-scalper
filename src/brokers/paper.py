@@ -31,6 +31,11 @@ from brokers.base import (
     Position,
     Side,
 )
+from brokers.trade_mode import (
+    DEFAULT_TRADE_MODE,
+    VALID_TRADE_MODES,
+    check_and_maybe_reject,
+)
 from config.settings import Settings
 from data.instruments import InstrumentMaster
 from data.market_data import CandleFetcher, YFinanceFetcher
@@ -62,6 +67,7 @@ class PaperBroker(BrokerBase):
 
         # Collaborators.
         self.store = StateStore(self._db_path)
+        _seed_control_flags(self.store, settings)
         self.om = OrderManager(
             self.store,
             starting_cash=settings.capital.starting_inr,
@@ -145,9 +151,16 @@ class PaperBroker(BrokerBase):
 
         Accepts an optional ``ts`` so backtest and dry-run drivers can
         pin the order's timestamp to the simulated tick time, and an
-        ``intent`` kwarg used by trade-mode enforcement (see D11 Slice 0).
+        ``intent`` kwarg used by trade-mode enforcement. In
+        ``trade_mode = watch_only`` an ``intent="entry"`` call returns a
+        REJECTED_BY_TRADE_MODE order without touching the order book;
+        exits (``intent="exit"``) always flow through.
         """
-        _ = intent  # used by the trade-mode check added in Slice 0
+        rejection = check_and_maybe_reject(
+            self.store, symbol, qty, side, order_type, intent, "PaperBroker",
+        )
+        if rejection is not None:
+            return rejection
         return self.om.submit(
             symbol=symbol, qty=qty, side=side, order_type=order_type,
             price=price, trigger_price=trigger_price, ts=ts,
@@ -244,3 +257,29 @@ def _default_fetcher() -> CandleFetcher:
     """Deferred construction so importing PaperBroker doesn't force a
     yfinance install on systems that only ever run tests."""
     return YFinanceFetcher()
+
+
+def _seed_control_flags(store: "StateStore", settings: Settings) -> None:
+    """Seed the operator control-plane flags on first broker init.
+
+    Only rows that don't already exist are written — subsequent
+    restarts preserve whatever the operator (or a prior scheduler run)
+    set. Uses ``settings.runtime.initial_trade_mode`` if present,
+    falling back to the PROMPT-mandated ``watch_only`` default.
+    """
+    runtime_cfg = settings.raw.get("runtime", {}) or {}
+    initial_mode = runtime_cfg.get("initial_trade_mode", DEFAULT_TRADE_MODE)
+    if initial_mode not in VALID_TRADE_MODES:
+        logger.warning(
+            "runtime.initial_trade_mode={!r} invalid; falling back to {}",
+            initial_mode, DEFAULT_TRADE_MODE,
+        )
+        initial_mode = DEFAULT_TRADE_MODE
+    store.ensure_initial_flags(
+        {
+            "trade_mode": initial_mode,
+            "scheduler_state": "stopped",
+            "kill_switch": "armed",
+        },
+        actor="system_init",
+    )

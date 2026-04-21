@@ -21,6 +21,7 @@ from data.holidays import HolidayCalendar
 from data.instruments import InstrumentMaster
 from data.market_data import FakeCandleFetcher, df_to_candles
 from scheduler.scan_loop import ScanContext, run_tick
+from tests.fixtures import paper_mode
 from tests.fixtures.synthetic import bullish_breakout_df, flat_chop_df
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -39,7 +40,7 @@ def _build_ctx(
     candles_per_symbol: dict[str, list[Candle]],
     min_score: int = 4,
 ) -> ScanContext:
-    settings = Settings.from_template()
+    settings = paper_mode(Settings.from_template())
     # The synthetic bullish fixture is engineered to fire the four
     # regime-level factors reliably but not the timing-sensitive
     # VWAP / MACD crosses (see D3 notes). min_score=4 lets the scan

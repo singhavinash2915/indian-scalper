@@ -13,6 +13,7 @@ from brokers.paper import PaperBroker
 from config.settings import Settings
 from data.instruments import InstrumentMaster
 from data.market_data import FakeCandleFetcher, build_synthetic_candles
+from tests.fixtures import paper_mode
 
 IST = ZoneInfo("Asia/Kolkata")
 T0 = datetime(2026, 4, 21, 9, 30, tzinfo=IST)
@@ -20,7 +21,7 @@ T0 = datetime(2026, 4, 21, 9, 30, tzinfo=IST)
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings.from_template()
+    return paper_mode(Settings.from_template())
 
 
 @pytest.fixture
