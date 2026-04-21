@@ -1,0 +1,43 @@
+# Local Docker deployment. `docker compose up --build` boots the
+# scheduler + dashboard on http://127.0.0.1:8080. Data + logs are
+# volume-mounted so state persists across rebuilds.
+#
+# For Raspberry Pi or any single-host deploy, this file is a reasonable
+# starting point — edit ports / volumes / env as you need.
+
+services:
+  scalper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: indian-scalper:latest
+    container_name: indian-scalper
+    restart: unless-stopped
+    ports:
+      # Bind to loopback — the dashboard has no auth. Change to
+      # "0.0.0.0:8080:8080" only behind an auth proxy.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Mount the operator's config so container updates don't stomp it.
+      - ./config.yaml:/app/config.yaml:rw
+      # Secrets for live broker mode (UPSTOX_*). Optional.
+      - ./.env:/app/.env:ro
+    environment:
+      - TZ=Asia/Kolkata
+      - DASHBOARD_HOST=0.0.0.0
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          r = urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)
+          sys.exit(0 if r.status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

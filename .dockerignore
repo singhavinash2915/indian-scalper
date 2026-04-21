@@ -1,0 +1,40 @@
+# --- Keep the build context small and reproducible ---
+
+# Virtualenvs must be rebuilt inside the image from uv.lock.
+.venv/
+venv/
+env/
+
+# Tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local runtime state — mounted as volumes, never baked in
+data/
+logs/
+*.db
+*.db-journal
+config.yaml
+.env
+
+# VCS
+.git/
+.gitignore
+.github/
+
+# Test artefacts + docs that don't belong in the runtime image
+tests/
+CHANGELOG.md
+bootstrap.py
+PROMPT.md

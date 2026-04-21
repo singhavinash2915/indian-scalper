@@ -48,3 +48,60 @@ See `PROMPT.md` for the target architecture. Key modules (as they land):
 
 All runtime behavior lives in `config.yaml` (generated on first run, gitignored).
 Secrets live in `.env` (copy from `.env.example`, gitignored).
+
+## Running
+
+Local Python process (paper mode, scheduler + dashboard in one process):
+
+```bash
+uv run python -m serve
+# Dashboard: http://127.0.0.1:8080
+```
+
+## Deployment
+
+### Docker
+
+```bash
+# Build + run with the shipped compose file.
+docker compose up --build
+# or a plain docker run
+docker build -t indian-scalper:latest .
+docker run --rm -it \
+  -p 127.0.0.1:8080:8080 \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/logs:/app/logs" \
+  -v "$PWD/config.yaml:/app/config.yaml" \
+  indian-scalper:latest
+```
+
+The image is multi-stage (uv-resolved venv → slim runtime), runs as a
+non-root user (`scalper:1001`), and the `HEALTHCHECK` hits
+`/health` every 30 s.
+
+### systemd (bare-metal / Raspberry Pi)
+
+1. Clone this repo to `/opt/indian-scalper`.
+2. `cd /opt/indian-scalper && uv sync --no-dev`
+3. Create the user and fix ownership:
+   ```bash
+   sudo useradd --system --home /opt/indian-scalper scalper
+   sudo chown -R scalper:scalper /opt/indian-scalper
+   ```
+4. Install the unit file and enable:
+   ```bash
+   sudo cp deploy/indian-scalper.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now indian-scalper
+   journalctl -u indian-scalper -f
+   ```
+
+### Live trading gate
+
+Before flipping `mode: live` in `config.yaml`:
+
+1. Set `UPSTOX_ACCESS_TOKEN` (and friends) in `.env`.
+2. Export `LIVE_TRADING_ACKNOWLEDGED=yes`.
+3. On the first interactive run, type `LIVE` at the prompt to confirm.
+
+Both gates must pass or the process exits with code 2.

@@ -1,0 +1,64 @@
+# Systemd unit for a bare-metal (non-Docker) deployment.
+#
+# Install:
+#   1. Clone the repo to /opt/indian-scalper (or adjust WorkingDirectory).
+#   2. As the dedicated user, run `uv sync` inside /opt/indian-scalper.
+#   3. Copy this file to /etc/systemd/system/indian-scalper.service.
+#   4. Create the user:  sudo useradd --system --home /opt/indian-scalper scalper
+#   5. chown -R scalper:scalper /opt/indian-scalper
+#   6. sudo systemctl daemon-reload
+#      sudo systemctl enable --now indian-scalper
+#
+# Logs:   journalctl -u indian-scalper -f
+# Status: systemctl status indian-scalper
+
+[Unit]
+Description=Indian Equity Momentum Scalper (paper trading)
+Documentation=https://github.com/singhavinash2915/indian-scalper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scalper
+Group=scalper
+WorkingDirectory=/opt/indian-scalper
+
+# Pull deps from the .venv that uv produced during install.
+Environment="PATH=/opt/indian-scalper/.venv/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/opt/indian-scalper/src"
+Environment="PYTHONUNBUFFERED=1"
+Environment="TZ=Asia/Kolkata"
+
+# Uncomment when flipping mode: live in config.yaml. D9 entry gates
+# refuse to start without this.
+# Environment="LIVE_TRADING_ACKNOWLEDGED=yes"
+
+# EnvironmentFile is sourced if present — fine place for UPSTOX_* tokens.
+EnvironmentFile=-/opt/indian-scalper/.env
+
+ExecStart=/opt/indian-scalper/.venv/bin/python -m serve
+
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Stdout/stderr go straight to journald.
+StandardOutput=journal
+StandardError=journal
+
+# --- Sandboxing ---
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/opt/indian-scalper/data /opt/indian-scalper/logs
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

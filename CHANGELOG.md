@@ -6,6 +6,62 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 10 — Dockerfile + systemd deployment
+
+- **feat(serve):** `src/serve.py` — single-process production entry
+  point. Loads config → configures loguru → builds
+  `PaperBroker` + `InstrumentMaster` + `ScanContext` → starts
+  APScheduler's `BackgroundScheduler` (tick every
+  `scan_interval_seconds`, `max_instances=1`, `coalesce=True`) →
+  runs uvicorn serving the FastAPI dashboard. Composition is split
+  into `load_or_create_config`, `build_context`, `build_scheduler`
+  so tests assemble the pieces without binding a port. Refuses to
+  start against `broker: upstox` — live execution needs a separate
+  orchestration layer (D9 notes).
+- **feat(docker):** `Dockerfile` — multi-stage build
+  (python:3.12-slim-bookworm).
+    * Stage 1 uses uv to resolve deps from a frozen `uv.lock` with
+      `--no-dev` so the runtime image carries no pytest/ruff/mypy.
+    * Stage 2 runs as a non-root `scalper:1001` user, `EXPOSE 8080`,
+      sets `TZ=Asia/Kolkata`, and ships a `HEALTHCHECK` that hits
+      `/health` every 30s (stdlib `urllib.request`, no extra deps).
+    * `CMD ["python", "-m", "serve"]`.
+- **feat(docker):** `.dockerignore` keeps the build context tight —
+  excludes `.venv/`, `data/`, `logs/`, `.git/`, caches, config.yaml,
+  .env, tests/, CHANGELOG, bootstrap.py.
+- **feat(docker):** `docker-compose.yml` — binds `127.0.0.1:8080:8080`
+  by default (no auth → no public exposure), mounts `./data`,
+  `./logs`, `./config.yaml`, optional `./.env`, ships a
+  dashboard-aware healthcheck.
+- **feat(deploy):** `deploy/indian-scalper.service` — systemd unit for
+  bare-metal / Raspberry Pi installs. Runs as a dedicated user,
+  `Restart=on-failure` with a start-limit burst, `EnvironmentFile=-`
+  picks up `.env` if present, and a hardening block
+  (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`,
+  `ProtectHome`, `ReadWritePaths=/opt/indian-scalper/data
+  /opt/indian-scalper/logs`, `LockPersonality`).
+- **docs(README):** extended with Running + Docker + systemd +
+  live-trading-gate sections.
+- **test(serve):** 20 new tests covering:
+    * `build_context` returns a paper ScanContext; refuses
+      `broker: upstox` with a clear error.
+    * `build_scheduler` registers `scan_tick` with the configured
+      interval, `max_instances=1`, `coalesce=True`, and is not
+      started automatically.
+    * `load_or_create_config` materialises the template on first run
+      and preserves operator edits on subsequent runs.
+    * Dockerfile is multi-stage, runs non-root (`useradd` + `USER
+      scalper`), `EXPOSE 8080`, has `HEALTHCHECK` hitting `/health`,
+      uses `uv sync --frozen --no-dev`, `CMD` invokes `serve`.
+    * docker-compose binds loopback by default (non-comment lines
+      only — documentation comments mentioning 0.0.0.0 don't trip the
+      assertion), mounts state volumes, has a healthcheck.
+    * systemd unit runs as the dedicated user, restarts on failure,
+      includes the hardening block, and `ExecStart` points at the
+      venv's Python.
+    * `.dockerignore` excludes `.venv/`, `data/`, `logs/`, `.git/`,
+      `__pycache__/`, `config.yaml`, `.env`.
+
 ### Deliverable 9 — UpstoxBroker (live broker, feature-parity with PaperBroker)
 
 - **feat(brokers):** `src/brokers/upstox.py` — `UpstoxBroker`
