@@ -6,6 +6,78 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 11 — Slice 4 — Pre-flight CLI + RUNBOOK (Wednesday-launch gate)
+
+- **feat(preflight):** ``src/preflight.py`` — 11-check gate runnable
+  as ``uv run python -m preflight``. Each check returns a
+  ``PreflightCheck(name, status, detail)``; ``run_all_checks``
+  collects them without short-circuiting so the operator gets a full
+  pass/fail matrix rather than "the first one blew up". Exit code 0
+  on all pass, 1 on any fail. ``_guard`` wraps every check so an
+  unexpected exception becomes a ``fail`` with a stack-trace preview
+  instead of crashing the whole preflight.
+- **feat(preflight):** checks implemented
+  per PROMPT §4 —
+    1. ``config`` loads + validates,
+    2. ``schema`` — every table in ``REQUIRED_TABLES`` exists,
+    3. ``holidays`` — YAML loads + today's trading-day status +
+       next trading day printed,
+    4. ``instruments`` — count > 0 AND ``MAX(updated_at)`` <
+       7 days old (rejects stale masters),
+    5. ``universe`` — table populated AND at least one row
+       enabled,
+    6. ``trade_mode`` — value is sane; ``live`` fails without
+       ``LIVE_TRADING_ACKNOWLEDGED``,
+    7. ``control_flags`` — ``scheduler_state=stopped`` AND
+       ``kill_switch=armed`` (catches ungraceful shutdown from a
+       prior session),
+    8. ``backtest_regression`` — replays the shipped bullish
+       fixture through ``BacktestHarness``; fails if the trade
+       count drops below the expected floor (scoring drift guard),
+    9. ``dashboard_health`` — in-process ``TestClient`` hit on
+       ``/health`` (no port binding, no thread) so we exercise
+       Settings → broker → registry → create_app → route wiring
+       before systemd releases the real port,
+   10. ``disk_space`` — both ``data/`` and ``logs/`` paths must have
+       ≥ 1 GiB free,
+   11. ``live_credentials`` — only when ``trade_mode=live``: env-var
+       gate + smoke call to ``UpstoxBroker.get_funds()``. Skipped
+       (not failed) in ``watch_only``/``paper``.
+- **feat(preflight):** CLI flags — ``--config PATH`` and
+  ``--skip-backtest`` (trims ExecStartPre start-up to < 2s by
+  skipping check 8; recommended for systemd, run full preflight
+  manually once a day).
+- **feat(deploy):** ``deploy/indian-scalper.service`` gains
+  ``ExecStartPre=/opt/indian-scalper/.venv/bin/python -m preflight
+  --skip-backtest``. systemd refuses to start the scheduler if any
+  gate fails — bad state never reaches the network.
+- **docs(runbook):** ``RUNBOOK.md`` at repo root, 8 sections per
+  PROMPT + the Wednesday 09:15 launch plan:
+    1. First-run procedure (clean clone → bot watching market).
+    2. Daily startup checklist (pre-09:15 IST).
+    3. Mode transitions (watch_only ↔ paper ↔ live, every click +
+       CLI fallback).
+    4. Mid-day intervention (pause / kill / re-arm / per-symbol
+       override, with a shell-level kill command for when the UI
+       is down).
+    5. End of day (EOD square-off verification, log rotation,
+       equity snapshot archival).
+    6. Incident response (broker down, network drops, dashboard
+       unresponsive, daily-loss halt, drawdown circuit, SQLite
+       corruption).
+    7. First live-money checklist (15 boxes before flipping
+       ``live``).
+    8. Wednesday 09:15 launch plan.
+- **test(preflight):** 28 tests covering every check individually
+  (happy + unhappy paths, including stale-instruments, empty-
+  universe, all-disabled-universe, live-mode-without-env-ack,
+  scheduler-not-stopped, kill-switch-tripped), composite
+  ``run_all_checks`` green-path + config-failure-skip-rest +
+  backtest-skip-flag + universe-fail short-circuit, CLI exit codes
+  (0 green / 1 any fail), ``_guard``'s uncaught-exception
+  handling, and a pin that the systemd unit wires
+  ``ExecStartPre=preflight`` so the D11 contract stays honoured.
+
 ### Deliverable 11 — Slice 3 — Signals view + per-symbol charts
 
 - **schema(state):** ``signal_snapshots(id, ts, symbol, score,

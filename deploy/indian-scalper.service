@@ -37,6 +37,11 @@ Environment="TZ=Asia/Kolkata"
 # EnvironmentFile is sourced if present — fine place for UPSTOX_* tokens.
 EnvironmentFile=-/opt/indian-scalper/.env
 
+# Pre-flight — refuse to start the service if any sanity check fails.
+# --skip-backtest keeps ExecStartPre fast (< 2s). Run a full preflight
+# manually once a day if you want the backtest regression guard.
+ExecStartPre=/opt/indian-scalper/.venv/bin/python -m preflight --skip-backtest
+
 ExecStart=/opt/indian-scalper/.venv/bin/python -m serve
 
 Restart=on-failure
