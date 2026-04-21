@@ -6,6 +6,53 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 4 — PaperBroker + order manager + state persistence
+
+- **feat(execution):** `src/execution/state.py` — `StateStore`, SQLite DAO.
+  Tables: `orders`, `positions`, `equity_curve`, `audit_log` (append-only),
+  `kv` (kill switch + flags). Every write runs in its own transaction.
+  Upsert-based so repeated saves never duplicate rows.
+- **feat(execution):** `src/execution/order_manager.py` — `OrderManager`,
+  paper-mode fill simulator. MARKET orders fill on next `settle(symbol,
+  candle)` at `candle.open * (1 ± slippage_pct/100)`; LIMIT orders fill
+  at the limit price when the candle range crosses it; SL / SL-M fill
+  at `trigger * (1 ± slippage)`. Supports averaging-in, position flips,
+  partial closes, and full flat-out. Enforces cash guard — BUY orders
+  that exceed available cash are REJECTED (raises
+  `InsufficientFundsError`) with an audit entry.
+- **feat(data):** `src/data/market_data.py` — `CandleFetcher` protocol
+  with three implementations: `FakeCandleFetcher` (deterministic,
+  test-only, raises on unseeded symbols), `YFinanceFetcher` (lazy
+  yfinance import, `.NS` suffix), and CSV cache helpers
+  (`candles_to_csv`, `candles_from_csv`, `build_synthetic_candles`).
+- **feat(brokers):** `src/brokers/paper.py` now fully implements
+  `BrokerBase`. Composes `StateStore`, `OrderManager`,
+  `InstrumentMaster`, and an injectable `CandleFetcher`. Adds
+  `settle(symbol, candle)` (advances fill simulation + updates LTP
+  cache + snapshots equity), `mark_to_market(prices)`, and a kill-switch
+  flag persisted in SQLite.
+- **feat(brokers):** **idempotent recovery** — restarting `PaperBroker`
+  against an existing SQLite file reloads every pending order,
+  every open position, and reconstructs cash by replaying filled-order
+  cash flow. Covered by a dedicated test (`broker1.place_order(...)` →
+  `broker2 = PaperBroker(same_db)` → assertions).
+- **feat(audit):** every order lifecycle event (submit, modify, cancel,
+  fill, reject) appends a row to `audit_log` with a JSON details blob.
+- **chore(deps):** added `yfinance>=0.2.40` as a runtime dep so paper
+  mode works out of the box. yfinance is lazy-imported in
+  `YFinanceFetcher.get_candles` so tests don't pay the import cost.
+- **test(execution):** 8 tests for `StateStore` (round-trip, idempotency,
+  filtered loads, audit append-only, kill-switch flag).
+- **test(execution):** 15 tests for `OrderManager` (market/limit/SL
+  fills, cancel, modify, cash guard, averaging, position flips,
+  mark-to-market, restart recovery).
+- **test(data):** 4 tests for market_data (FakeFetcher, CSV
+  round-trip, synthetic candle shapes).
+- **test(brokers):** 13 tests for full PaperBroker lifecycle
+  (BrokerBase conformance, order placement, settle/fill,
+  equity-curve snapshot on settle, cold-vs-warm LTP, kill switch,
+  audit trail, recovery).
+
 ### Deliverable 3 — Indicator library + 8-factor scoring engine
 
 - **feat(strategy):** `src/strategy/indicators.py` — pure-function wrappers

@@ -1,15 +1,25 @@
 """In-memory paper broker that simulates fills at next-candle-open + slippage.
 
-This is a *scaffold only* — all abstract methods remain ``NotImplementedError``
-stubs. Deliverable 4 fleshes out order placement, SQLite persistence, and
-idempotent recovery. The constructor + SQLite schema live here so tests can
-instantiate the broker and later deliverables just fill in behaviour.
+Composes three collaborators:
+
+* ``StateStore`` (``src/execution/state.py``) — SQLite persistence.
+* ``OrderManager`` (``src/execution/order_manager.py``) — pending-order
+  queue, fill simulation, cash accounting, position tracking.
+* ``CandleFetcher`` (``src/data/market_data.py``) — candle source.
+  Defaults to ``YFinanceFetcher``; tests/backtests inject a
+  ``FakeCandleFetcher``.
+
+The settle / mark-to-market / kill-switch surface is what the scan loop
+(Deliverable 6) will drive.
 """
 
 from __future__ import annotations
 
-import sqlite3
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from loguru import logger
 
 from brokers.base import (
     BrokerBase,
@@ -21,60 +31,102 @@ from brokers.base import (
     Side,
 )
 from config.settings import Settings
+from data.instruments import InstrumentMaster
+from data.market_data import CandleFetcher, YFinanceFetcher
+from execution.order_manager import OrderManager
+from execution.state import StateStore
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class PaperBroker(BrokerBase):
-    """In-memory paper broker. State persisted to SQLite for restart safety."""
-
-    def __init__(self, settings: Settings, db_path: str | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        db_path: str | Path | None = None,
+        candle_fetcher: CandleFetcher | None = None,
+        instruments: InstrumentMaster | None = None,
+    ) -> None:
         self.settings = settings
-        self.cash: float = settings.capital.starting_inr
-        self.positions: dict[str, Position] = {}
-        self.orders: dict[str, Order] = {}
+
+        # Resolve paths / defaults from config.yaml ``storage`` block.
+        storage_cfg = settings.raw.get("storage", {})
+        self._db_path = Path(db_path or storage_cfg.get("db_path", "data/scalper.db"))
+        self._candles_cache_dir = Path(
+            storage_cfg.get("candles_cache_dir", "data/candles")
+        )
 
         paper_cfg = settings.raw.get("paper", {})
         self.slippage_pct: float = paper_cfg.get("slippage_pct", 0.05)
 
-        storage_cfg = settings.raw.get("storage", {})
-        self._db_path = db_path or storage_cfg.get("db_path", "data/scalper.db")
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
+        # Collaborators.
+        self.store = StateStore(self._db_path)
+        self.om = OrderManager(
+            self.store,
+            starting_cash=settings.capital.starting_inr,
+            slippage_pct=self.slippage_pct,
+        )
+        self.fetcher: CandleFetcher = candle_fetcher or _default_fetcher()
+        self.instruments = instruments or InstrumentMaster(
+            db_path=self._db_path,
+            cache_dir=self._db_path.parent / "instruments",
+        )
 
-    def _init_db(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS orders (
-                    id TEXT PRIMARY KEY, symbol TEXT, side TEXT, qty INTEGER,
-                    order_type TEXT, price REAL, trigger_price REAL,
-                    status TEXT, filled_qty INTEGER, avg_price REAL, ts TEXT
-                );
-                CREATE TABLE IF NOT EXISTS positions (
-                    symbol TEXT PRIMARY KEY, qty INTEGER, avg_price REAL,
-                    stop_loss REAL, take_profit REAL, trail_stop REAL,
-                    opened_at TEXT
-                );
-                CREATE TABLE IF NOT EXISTS equity_curve (
-                    ts TEXT PRIMARY KEY, equity REAL, cash REAL, pnl REAL
-                );
-                """
-            )
+        # Running LTP cache — updated by settle() + mark_to_market().
+        self._ltp: dict[str, float] = {sym: p.ltp for sym, p in self.om.positions.items()}
+
+        logger.info(
+            "PaperBroker ready | starting_cash=₹{:,.0f} db={} fetcher={}",
+            self.om.cash, self._db_path, type(self.fetcher).__name__,
+        )
 
     # ------------------------------------------------------------------ #
-    # BrokerBase contract — stubs. Implemented in Deliverable 4.          #
+    # Convenience properties                                              #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def cash(self) -> float:
+        return self.om.cash
+
+    @property
+    def orders(self) -> dict[str, Order]:
+        return self.om.orders
+
+    @property
+    def positions(self) -> dict[str, Position]:
+        return self.om.positions
+
+    # ------------------------------------------------------------------ #
+    # BrokerBase: reference / reads                                       #
     # ------------------------------------------------------------------ #
 
     def get_instruments(self) -> list[Instrument]:
-        raise NotImplementedError("Load from cached NSE master CSV (Deliverable 2).")
+        return self.instruments.filter()
 
-    def get_candles(self, symbol: str, interval: str, lookback: int) -> list[Candle]:
-        raise NotImplementedError(
-            "Fetch historical candles from Upstox public API or yfinance "
-            "(.NS suffix) and cache to data/candles/ (Deliverable 2)."
-        )
+    def get_candles(
+        self, symbol: str, interval: str, lookback: int
+    ) -> list[Candle]:
+        return self.fetcher.get_candles(symbol, interval, lookback)
 
     def get_ltp(self, symbols: list[str]) -> dict[str, float]:
-        raise NotImplementedError("Return last close of most recent candle (Deliverable 2).")
+        out: dict[str, float] = {}
+        for sym in symbols:
+            cached = self._ltp.get(sym)
+            if cached is not None:
+                out[sym] = cached
+                continue
+            # Cold read — pull the last closed candle and seed the cache.
+            candles = self.fetcher.get_candles(
+                sym, self.settings.strategy.candle_interval, lookback=1
+            )
+            if candles:
+                out[sym] = candles[-1].close
+                self._ltp[sym] = candles[-1].close
+        return out
+
+    # ------------------------------------------------------------------ #
+    # BrokerBase: order lifecycle                                         #
+    # ------------------------------------------------------------------ #
 
     def place_order(
         self,
@@ -85,29 +137,68 @@ class PaperBroker(BrokerBase):
         price: float | None = None,
         trigger_price: float | None = None,
     ) -> Order:
-        raise NotImplementedError(
-            "Create Order, persist to sqlite, fill at next candle open + "
-            "slippage. Update self.cash and self.positions (Deliverable 4)."
+        return self.om.submit(
+            symbol=symbol, qty=qty, side=side, order_type=order_type,
+            price=price, trigger_price=trigger_price,
         )
 
     def modify_order(self, order_id: str, **kwargs: object) -> Order:
-        raise NotImplementedError
+        return self.om.modify(order_id, **kwargs)
 
     def cancel_order(self, order_id: str) -> bool:
-        raise NotImplementedError
+        return self.om.cancel(order_id)
 
     # ------------------------------------------------------------------ #
-    # Already functional                                                  #
+    # Paper-specific simulation hooks                                     #
+    # ------------------------------------------------------------------ #
+
+    def settle(self, symbol: str, candle: Candle) -> list[Order]:
+        """Advance the simulation for this symbol by one candle.
+
+        Fills any pending orders against ``candle``, updates the LTP
+        cache with ``candle.close``, and records an equity snapshot.
+        The scan loop (Deliverable 6) calls this for every symbol it
+        fetches a fresh bar for.
+        """
+        filled = self.om.settle_on_candle(symbol, candle)
+        self._ltp[symbol] = candle.close
+        self.om.mark_to_market(self._ltp)
+        self.om.snapshot_equity(candle.ts)
+        return filled
+
+    def mark_to_market(self, prices: dict[str, float]) -> None:
+        self._ltp.update(prices)
+        self.om.mark_to_market(self._ltp)
+        self.om.snapshot_equity()
+
+    # ------------------------------------------------------------------ #
+    # BrokerBase: portfolio reads                                         #
     # ------------------------------------------------------------------ #
 
     def get_positions(self) -> list[Position]:
-        return list(self.positions.values())
+        return list(self.om.positions.values())
 
     def get_funds(self) -> dict[str, float]:
-        used = sum(abs(p.qty) * p.avg_price for p in self.positions.values())
-        pnl = sum(p.pnl for p in self.positions.values())
+        used = sum(abs(p.qty) * p.avg_price for p in self.om.positions.values())
+        pnl = self.om.total_pnl()
         return {
-            "available": self.cash,
+            "available": self.om.cash,
             "used": used,
-            "equity": self.cash + used + pnl,
+            "equity": self.om.cash + used + pnl,
         }
+
+    # ------------------------------------------------------------------ #
+    # Kill switch — writes a KV flag that the scan loop polls every tick  #
+    # ------------------------------------------------------------------ #
+
+    def set_kill_switch(self, on: bool = True) -> None:
+        self.store.set_flag("kill_switch", "1" if on else "0")
+
+    def is_kill_switch_on(self) -> bool:
+        return self.store.get_flag("kill_switch", "0") == "1"
+
+
+def _default_fetcher() -> CandleFetcher:
+    """Deferred construction so importing PaperBroker doesn't force a
+    yfinance install on systems that only ever run tests."""
+    return YFinanceFetcher()
