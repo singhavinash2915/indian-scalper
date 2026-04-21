@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indian Scalper — Dashboard</title>
+
+<!-- HTMX for partial refreshes -->
+<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+<!-- Plotly for the equity curve -->
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+
+<style>
+  :root {
+    --bg: #0b0f15;
+    --panel: #121821;
+    --panel-2: #1a222e;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --good: #3fb950;
+    --bad: #f85149;
+    --warn: #d29922;
+    --border: #30363d;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", sans-serif;
+    font-size: 14px; line-height: 1.45;
+  }
+  .banner {
+    background: repeating-linear-gradient(
+      45deg, #5a2020, #5a2020 16px, #6a2424 16px, #6a2424 32px
+    );
+    color: #ffdada; font-weight: 700; letter-spacing: 0.08em;
+    text-align: center; padding: 8px 16px; font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  header.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header.topbar h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  header.topbar .meta { color: var(--muted); font-size: 12px; }
+  main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+
+  .grid { display: grid; gap: 16px; }
+  .grid.kpis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .panel h2 {
+    margin: 0 0 10px; font-size: 13px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--muted); font-weight: 600;
+  }
+  .kpi .value { font-size: 22px; font-weight: 600; }
+  .kpi .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .good { color: var(--good); }
+  .bad { color: var(--bad); }
+  .warn { color: var(--warn); }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  tr:last-child td { border-bottom: none; }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+
+  button {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--fg); padding: 8px 14px; border-radius: 6px;
+    cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: #222c3a; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  button.danger:hover { background: #3a1818; }
+
+  .logs {
+    max-height: 260px; overflow-y: auto; font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px; color: var(--muted); white-space: pre-wrap;
+    background: #0a0e14; border-radius: 6px; padding: 10px; border: 1px solid var(--border);
+  }
+  .flex { display: flex; gap: 8px; align-items: center; }
+  .spacer { flex: 1; }
+</style>
+</head>
+<body>
+
+<div class="banner">{{ banner }}</div>
+
+<header class="topbar">
+  <h1>Indian Scalper</h1>
+  <div class="meta">Dashboard · HTMX polling</div>
+</header>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+</body>
+</html>

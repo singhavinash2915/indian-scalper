@@ -1,0 +1,42 @@
+{# KPI tiles — polled from /partials/kpis. Self-contained grid. #}
+<div class="grid kpis">
+  <div class="panel kpi">
+    <h2>Equity</h2>
+    <div class="value">₹{{ "{:,.0f}".format(equity) }}</div>
+    <div class="sub">
+      vs start ₹{{ "{:,.0f}".format(starting) }}
+      <span class="{{ 'good' if total_pnl >= 0 else 'bad' }}">
+        ({{ "{:+.2f}".format(total_pnl_pct) }}%)
+      </span>
+    </div>
+  </div>
+  <div class="panel kpi">
+    <h2>Cash</h2>
+    <div class="value">₹{{ "{:,.0f}".format(cash) }}</div>
+    <div class="sub">used ₹{{ "{:,.0f}".format(used) }}</div>
+  </div>
+  <div class="panel kpi">
+    <h2>Day P&amp;L</h2>
+    <div class="value {{ 'good' if day_pnl >= 0 else 'bad' }}">
+      {{ "{:+,.0f}".format(day_pnl) }}
+    </div>
+    <div class="sub">{{ "{:+.2f}".format(day_pnl_pct) }}% today</div>
+  </div>
+  <div class="panel kpi">
+    <h2>Positions</h2>
+    <div class="value">{{ eq_open }}/{{ eq_max }} eq · {{ fno_open }}/{{ fno_max }} F&amp;O</div>
+    <div class="sub">caps from config.risk</div>
+  </div>
+  <div class="panel kpi">
+    <h2>Peak Equity</h2>
+    <div class="value">₹{{ "{:,.0f}".format(peak_equity) }}</div>
+    <div class="sub">all-time watermark</div>
+  </div>
+  <div class="panel kpi">
+    <h2>Kill Switch</h2>
+    <div class="value {{ 'bad' if kill_switch else 'good' }}">
+      {{ "ON · HALTED" if kill_switch else "OFF · live" }}
+    </div>
+    <div class="sub">mode {{ mode }} · broker {{ broker_name }}</div>
+  </div>
+</div>

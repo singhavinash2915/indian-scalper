@@ -6,6 +6,31 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 8 — FastAPI + HTMX dashboard
+
+- **feat(dashboard):** `src/dashboard/app.py` — `create_app(broker,
+  settings, log_file=None)` factory. Mounts Jinja templates, binds the
+  live `PaperBroker` to app state, wires every route. No SPA, no
+  build step — all refresh is HTMX polling over Jinja-rendered
+  partials.
+- **feat(dashboard):** routes — `GET /` page shell, `GET
+  /partials/{kpis,positions,trades,logs}` polled fragments,
+  `GET /api/equity.json` Plotly-ready series, `POST /actions/{kill,
+  unkill}` kill-switch toggles, `GET /health` smoke check.
+- **feat(dashboard):** templates (`src/dashboard/templates/*.html`) —
+  dark-themed GitHub-ish palette, prominent `PAPER TRADING // NOT
+  FINANCIAL ADVICE` banner. KPI tiles poll every 5s; positions every
+  5s; trades every 10s; log tail every 3s; equity curve every 30s.
+- **feat(dashboard):** Plotly equity curve (dark theme) with a dashed
+  starting-capital reference line. Loaded via CDN.
+- **feat(dashboard):** `MAX_LOG_LINES = 200` tail from the configured
+  loguru file path. Gracefully handles missing file / empty file.
+- **test(dashboard):** 14 tests via FastAPI TestClient — page shell,
+  health, KPI starting-capital + kill-switch render, positions
+  empty vs populated (with LTP + stop + TP), trades empty vs
+  closed-round-trip, equity JSON shape + contents, kill/unkill
+  actions, log tail with and without configured file.
+
 ### Deliverable 7 — Backtest harness + dry-run mode
 
 - **feat(backtest):** `src/backtest/harness.py` — `BacktestHarness.run()`

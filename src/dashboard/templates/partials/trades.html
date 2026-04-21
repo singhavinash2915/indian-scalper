@@ -1,0 +1,30 @@
+{% if trades %}
+<table>
+  <thead>
+    <tr>
+      <th>Symbol</th><th>Qty</th><th>Entry</th><th>Exit</th>
+      <th>P&amp;L</th><th>%</th><th>Hold (min)</th><th>Closed</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for t in trades %}
+    <tr>
+      <td>{{ t.symbol }}</td>
+      <td>{{ t.qty }}</td>
+      <td>₹{{ "{:,.2f}".format(t.entry_price) }}</td>
+      <td>₹{{ "{:,.2f}".format(t.exit_price) }}</td>
+      <td class="{{ 'good' if t.pnl >= 0 else 'bad' }}">
+        {{ "{:+,.2f}".format(t.pnl) }}
+      </td>
+      <td class="{{ 'good' if t.pnl_pct >= 0 else 'bad' }}">
+        {{ "{:+.2f}%".format(t.pnl_pct) }}
+      </td>
+      <td>{{ "{:.0f}".format(t.holding_minutes) }}</td>
+      <td>{{ t.exit_ts.strftime("%m-%d %H:%M") }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No closed trades yet.</div>
+{% endif %}

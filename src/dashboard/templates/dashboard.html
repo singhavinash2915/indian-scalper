@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- KPIs — refresh every 5s -->
+<div id="kpis"
+     hx-get="/partials/kpis"
+     hx-trigger="load, every 5s"
+     hx-swap="innerHTML">
+  <div class="panel"><span class="empty">Loading KPIs…</span></div>
+</div>
+
+<div class="grid" style="grid-template-columns: 2fr 1fr; margin-top: 16px;">
+  <!-- Equity curve (Plotly, hydrated by JS) -->
+  <section class="panel">
+    <h2>Equity Curve</h2>
+    <div id="equity-curve" style="width:100%; height: 340px;"></div>
+  </section>
+
+  <!-- Actions -->
+  <section class="panel">
+    <h2>Controls</h2>
+    <div class="flex" style="margin-bottom: 10px;">
+      <button hx-post="/actions/kill"
+              hx-swap="none"
+              hx-on::after-request="htmx.trigger('#kpis', 'refresh')"
+              class="danger">Kill switch ON</button>
+      <button hx-post="/actions/unkill"
+              hx-swap="none"
+              hx-on::after-request="htmx.trigger('#kpis', 'refresh')">
+        Kill switch OFF
+      </button>
+    </div>
+    <div class="empty">
+      Toggling the kill switch sets the SQLite flag the scan loop polls
+      every tick. Turning it ON halts all new entries; existing positions
+      are still managed.
+    </div>
+  </section>
+</div>
+
+<!-- Positions — refresh every 5s -->
+<div class="panel" style="margin-top: 16px;">
+  <h2>Open Positions</h2>
+  <div id="positions"
+       hx-get="/partials/positions"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <span class="empty">Loading…</span>
+  </div>
+</div>
+
+<!-- Trade history -->
+<div class="panel" style="margin-top: 16px;">
+  <h2>Trade History (last 50)</h2>
+  <div id="trades"
+       hx-get="/partials/trades"
+       hx-trigger="load, every 10s"
+       hx-swap="innerHTML">
+    <span class="empty">Loading…</span>
+  </div>
+</div>
+
+<!-- Log tail -->
+<div class="panel" style="margin-top: 16px;">
+  <h2>Scan Log Tail</h2>
+  <div id="logs"
+       hx-get="/partials/logs"
+       hx-trigger="load, every 3s"
+       hx-swap="innerHTML">
+    <span class="empty">Loading…</span>
+  </div>
+</div>
+
+<script>
+  // Plotly curve — lazy fetch + repaint every 30s.
+  async function refreshEquity() {
+    const res = await fetch("/api/equity.json", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    const trace = {
+      x: data.x, y: data.y, type: "scatter", mode: "lines",
+      line: { color: "#58a6ff", width: 2 }, name: "Equity",
+    };
+    const startLine = {
+      x: data.x.length ? [data.x[0], data.x[data.x.length - 1]] : [],
+      y: [data.starting, data.starting],
+      type: "scatter", mode: "lines",
+      line: { color: "#8b949e", dash: "dash", width: 1 },
+      name: "Starting capital",
+    };
+    Plotly.react("equity-curve", [trace, startLine], {
+      paper_bgcolor: "#121821", plot_bgcolor: "#121821",
+      font: { color: "#e6edf3" },
+      margin: { l: 50, r: 20, t: 10, b: 40 },
+      xaxis: { gridcolor: "#30363d" },
+      yaxis: { gridcolor: "#30363d", tickformat: ",.0f" },
+      showlegend: true, legend: { orientation: "h" },
+    }, { displayModeBar: false });
+  }
+  refreshEquity();
+  setInterval(refreshEquity, 30_000);
+</script>
+
+{% endblock %}

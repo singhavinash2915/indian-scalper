@@ -1,0 +1,9 @@
+{% if lines %}
+<div class="logs">
+{%- for line in lines -%}
+{{ line }}
+{% endfor -%}
+</div>
+{% else %}
+<div class="empty">No log file configured, or log is empty.</div>
+{% endif %}

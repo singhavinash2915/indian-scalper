@@ -1,4 +1,5 @@
-"""FastAPI + HTMX local dashboard.
+"""FastAPI + HTMX local dashboard."""
 
-Filled in by Deliverable 8.
-"""
+from dashboard.app import create_app
+
+__all__ = ["create_app"]
