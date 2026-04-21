@@ -1,40 +1,465 @@
-"""Main scan-loop skeleton.
+"""End-to-end scan loop.
 
-Deliverable 6 wires this to APScheduler + the scoring engine + risk engine.
-For now the loop just gates on market hours and sleeps — strategy and order
-logic land in later deliverables.
+Wires every earlier deliverable together: market-hours + holiday gating
+(D2) → candle fetch (D4) → indicator scoring (D3) → risk gates + sizing
++ stops (D5) → order placement + settle (D4) → position management +
+EOD square-off.
+
+The loop is split into two layers:
+
+* ``run_tick(ctx, ts)`` — one deterministic pass. Pure enough to
+  unit-test scenario-by-scenario: kill switch, market closed, entry,
+  position management, time stop, EOD, daily-loss halt, drawdown halt.
+* ``run_scan_loop(ctx)`` — APScheduler wrapper that calls ``run_tick``
+  every ``scan_interval_seconds``. Production entry point.
+
+Design notes:
+- Every tick gets a UUID ``trace_id`` stamped into the returned
+  ``TickReport`` and logged on every decision, per PROMPT's
+  "observable" constraint.
+- The loop never imports the Upstox SDK directly — all broker access
+  goes through ``BrokerBase`` + the PaperBroker-specific hooks
+  (``settle`` / ``mark_to_market`` / ``set_position_stops``).
+- Entry stops are computed at placement time and stashed in
+  ``ctx.pending_stops`` keyed by order_id. When the order fills on a
+  subsequent tick, the stops are applied to the freshly-created
+  position. If the loop crashes between fill and stop-apply, the
+  management branch notices a position without stops and rebuilds them
+  from the current ATR.
 """
 
 from __future__ import annotations
 
-import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
 
+import pandas as pd
 from loguru import logger
 
-from brokers.base import BrokerBase
+from brokers.base import OrderType, Position, Segment, Side
+from brokers.paper import PaperBroker
 from config.settings import Settings
-from scheduler.market_hours import is_market_open, now_ist
+from data.holidays import HolidayCalendar
+from data.instruments import InstrumentMaster
+from risk.circuit_breaker import (
+    check_daily_loss_limit,
+    check_drawdown_circuit,
+    check_position_limits,
+    combine_gates,
+    is_eod_squareoff_time,
+    peak_equity_from_curve,
+    start_of_day_equity,
+)
+from risk.position_sizing import position_size
+from risk.stops import (
+    atr_stop_price,
+    check_time_stop,
+    take_profit_price,
+    trailing_multiplier,
+    update_trail_stop,
+)
+from scheduler.market_hours import (
+    can_enter_new_trade,
+    is_market_open,
+    now_ist,
+)
+from strategy import indicators as ind
+from strategy.scoring import MIN_LOOKBACK_BARS, score_symbol
 
 
-def run_scan_loop(settings: Settings, broker: BrokerBase) -> None:
-    logger.info(
-        "Scan loop started | mode={} broker={}",
-        settings.mode,
-        settings.broker,
+# ---------------------------------------------------------------- #
+# Reports                                                           #
+# ---------------------------------------------------------------- #
+
+@dataclass
+class SignalReport:
+    symbol: str
+    score: int
+    qty: int
+    entry: float
+    stop: float
+    take_profit: float
+    order_id: str
+
+
+@dataclass
+class ExitReport:
+    symbol: str
+    reason: str  # "stop_loss" | "take_profit" | "trail_stop" | "time_stop" | "eod_squareoff"
+    order_id: str
+
+
+@dataclass
+class TickReport:
+    trace_id: str
+    ts: datetime
+    skipped_reason: str | None = None  # whole-tick skip
+    signals: list[SignalReport] = field(default_factory=list)
+    exits: list[ExitReport] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ScanContext:
+    """Everything ``run_tick`` needs. Passed in so the same function
+    drives both production and tests without touching module-level
+    globals.
+    """
+
+    settings: Settings
+    broker: PaperBroker
+    universe: list[str]
+    instruments: InstrumentMaster
+    calendar: HolidayCalendar | None = None
+    # ``pending_stops`` maps order_id → (stop_loss, take_profit). Scan
+    # loop populates it at entry; the next settle applies and clears.
+    pending_stops: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------- #
+# Tick entry point                                                  #
+# ---------------------------------------------------------------- #
+
+def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
+    ts = ts or now_ist()
+    trace_id = uuid.uuid4().hex[:8]
+    report = TickReport(trace_id=trace_id, ts=ts)
+
+    # 1. Kill switch (user-flipped or circuit-breaker-set).
+    if ctx.broker.is_kill_switch_on():
+        report.skipped_reason = "kill_switch"
+        logger.warning("[{}] kill switch on — skipping tick", trace_id)
+        return report
+
+    # 2. Market hours (incl. holidays).
+    if not is_market_open(ctx.settings, ts, calendar=ctx.calendar):
+        report.skipped_reason = "market_closed"
+        return report
+
+    # 3. Fetch latest candles + settle pending orders for every symbol
+    #    that matters (universe ∪ currently-open).
+    symbols = set(ctx.universe) | {p.symbol for p in ctx.broker.get_positions()}
+    candles_by_symbol: dict[str, list] = {}
+    for sym in symbols:
+        try:
+            candles = ctx.broker.get_candles(
+                sym, ctx.settings.strategy.candle_interval, lookback=120,
+            )
+        except Exception as exc:
+            logger.error("[{}] fetch {} failed: {}", trace_id, sym, exc)
+            continue
+        if not candles:
+            continue
+        candles_by_symbol[sym] = candles
+
+        # Settle pending orders against the most recent closed candle.
+        filled = ctx.broker.settle(sym, candles[-1])
+        for f in filled:
+            if f.id in ctx.pending_stops:
+                stop, tp = ctx.pending_stops.pop(f.id)
+                ctx.broker.set_position_stops(f.symbol, stop_loss=stop, take_profit=tp)
+                logger.info(
+                    "[{}] stops attached | {} SL={:.2f} TP={:.2f}",
+                    trace_id, f.symbol, stop, tp,
+                )
+
+    # 4. EOD square-off — close every intraday position and stop.
+    if (
+        ctx.settings.risk.eod_squareoff_intraday
+        and is_eod_squareoff_time(ts, ctx.settings.market)
+    ):
+        report.exits.extend(_squareoff_all(ctx, ts, trace_id))
+        report.skipped_reason = "eod_squareoff"
+        return report
+
+    # 5. Manage existing positions: stops, trailing, time stop.
+    report.exits.extend(_manage_positions(ctx, candles_by_symbol, ts, trace_id))
+
+    # 6. Entry window check.
+    if not can_enter_new_trade(ctx.settings, ts, calendar=ctx.calendar):
+        report.notes.append("outside_entry_window")
+        return report
+
+    # 7. Portfolio-level gates (daily loss, drawdown). Kill-switch flip
+    #    happens *here* when drawdown trips — downstream ticks are
+    #    locked out via the kill switch check at step 1.
+    funds = ctx.broker.get_funds()
+    equity_curve = ctx.broker.store.load_equity_curve()
+    peak = peak_equity_from_curve(equity_curve)
+    sod = start_of_day_equity(equity_curve, ts) or ctx.settings.capital.starting_inr
+
+    portfolio_gate = combine_gates(
+        check_daily_loss_limit(funds["equity"], sod, ctx.settings.risk),
+        check_drawdown_circuit(funds["equity"], peak, ctx.settings.risk),
     )
-    while True:
-        ts = now_ist()
-        if not is_market_open(settings, ts):
-            logger.debug("Market closed — sleeping 60s")
-            time.sleep(60)
+    if not portfolio_gate.allow_new_entries:
+        report.skipped_reason = f"halted:{portfolio_gate.reason}"
+        logger.warning("[{}] portfolio halt: {}", trace_id, portfolio_gate.reason)
+        # Drawdown circuit is not auto-release — latch the kill switch.
+        dd_gate = check_drawdown_circuit(funds["equity"], peak, ctx.settings.risk)
+        if not dd_gate.allow_new_entries:
+            ctx.broker.set_kill_switch(True)
+            report.notes.append("kill_switch_set_by_drawdown")
+        return report
+
+    # 8. Per-symbol evaluation.
+    for sym in ctx.universe:
+        signal = _evaluate_symbol(ctx, sym, candles_by_symbol.get(sym), ts, trace_id)
+        if signal:
+            report.signals.append(signal)
+
+    return report
+
+
+# ---------------------------------------------------------------- #
+# Internals                                                         #
+# ---------------------------------------------------------------- #
+
+def _candles_to_df(candles) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "open": [c.open for c in candles],
+            "high": [c.high for c in candles],
+            "low": [c.low for c in candles],
+            "close": [c.close for c in candles],
+            "volume": [c.volume for c in candles],
+        },
+        index=pd.DatetimeIndex([c.ts for c in candles], name="ts"),
+    )
+
+
+def _segment_map(ctx: ScanContext, symbols: list[str]) -> dict[str, Segment]:
+    out: dict[str, Segment] = {}
+    for sym in symbols:
+        inst = ctx.instruments.get(sym)
+        out[sym] = inst.segment if inst is not None else Segment.EQUITY
+    return out
+
+
+def _evaluate_symbol(
+    ctx: ScanContext,
+    symbol: str,
+    candles,
+    ts: datetime,
+    trace_id: str,
+) -> SignalReport | None:
+    if not candles or len(candles) < MIN_LOOKBACK_BARS:
+        return None
+
+    # Don't double up on an existing long.
+    if any(p.symbol == symbol and p.qty > 0 for p in ctx.broker.get_positions()):
+        return None
+
+    df = _candles_to_df(candles)
+    score = score_symbol(df, ctx.settings.strategy)
+    if score.blocked:
+        logger.debug("[{}] {} blocked: {}", trace_id, symbol, score.block_reason)
+        return None
+    if score.total < ctx.settings.strategy.min_score:
+        logger.debug("[{}] {} score {} < {}", trace_id, symbol, score.total, ctx.settings.strategy.min_score)
+        return None
+
+    # Position-count gate — symbol-specific because it depends on the
+    # target instrument's segment.
+    segments = _segment_map(ctx, [p.symbol for p in ctx.broker.get_positions()] + [symbol])
+    gate = check_position_limits(
+        ctx.broker.get_positions(),
+        segments[symbol],
+        ctx.settings.risk,
+        instrument_segments=segments,
+    )
+    if not gate.allow_new_entries:
+        logger.debug("[{}] {} position cap: {}", trace_id, symbol, gate.reason)
+        return None
+
+    # ATR → stop + take-profit.
+    atr_series = ind.atr(df["high"], df["low"], df["close"])
+    atr = float(atr_series.iloc[-1])
+    if atr <= 0:
+        return None
+
+    entry = float(df["close"].iloc[-1])
+    stop = atr_stop_price(
+        entry, atr, ctx.settings.risk.stop_atr_multiplier, Side.BUY,
+    )
+    tp = take_profit_price(
+        entry, atr, ctx.settings.risk.take_profit_atr_multiplier, Side.BUY,
+    )
+
+    inst = ctx.instruments.get(symbol)
+    lot_size = inst.lot_size if inst else 1
+
+    funds = ctx.broker.get_funds()
+    size = position_size(
+        capital=funds["equity"],
+        risk_per_trade_pct=ctx.settings.risk.risk_per_trade_pct,
+        entry_price=entry,
+        stop_price=stop,
+        lot_size=lot_size,
+        segment=segments[symbol],
+        max_notional=funds["available"],
+    )
+    if size.qty == 0:
+        logger.debug("[{}] {} sized to zero: {}", trace_id, symbol, size.note)
+        return None
+
+    order = ctx.broker.place_order(symbol, size.qty, Side.BUY, OrderType.MARKET)
+    ctx.pending_stops[order.id] = (stop, tp)
+
+    logger.info(
+        "[{}] SIGNAL {} qty={} entry={:.2f} stop={:.2f} tp={:.2f} score={}/8",
+        trace_id, symbol, size.qty, entry, stop, tp, score.total,
+    )
+    return SignalReport(
+        symbol=symbol, score=score.total, qty=size.qty,
+        entry=entry, stop=stop, take_profit=tp, order_id=order.id,
+    )
+
+
+def _manage_positions(
+    ctx: ScanContext,
+    candles_by_symbol: dict[str, list],
+    ts: datetime,
+    trace_id: str,
+) -> list[ExitReport]:
+    exits: list[ExitReport] = []
+    for pos in list(ctx.broker.get_positions()):
+        candles = candles_by_symbol.get(pos.symbol)
+        if not candles:
+            continue
+        df = _candles_to_df(candles)
+        if len(df) < MIN_LOOKBACK_BARS:
+            continue
+        atr_series = ind.atr(df["high"], df["low"], df["close"])
+        atr = float(atr_series.iloc[-1])
+        if atr <= 0:
+            continue
+        last = candles[-1]
+        current_price = float(last.close)
+
+        # 1. Hard stop / take-profit / trail-stop check against candle range.
+        exit_reason = _exit_triggered(pos, last)
+        if exit_reason:
+            report = _close_position(ctx, pos, exit_reason, trace_id)
+            if report:
+                exits.append(report)
             continue
 
-        # Deliverable 3–6 fill these in:
-        # 1. fetch candles for each symbol in universe
-        # 2. run indicator + scoring engine → list of signals
-        # 3. apply risk engine (position limits, circuit breaker, sizing)
-        # 4. place orders via broker
-        # 5. manage open positions (trail stop, time stop, EOD squareoff)
-        # 6. persist equity curve snapshot
+        # 2. Update trailing stop (ratchet only).
+        mult = trailing_multiplier(atr_series, ctx.settings.risk)
+        new_trail = update_trail_stop(pos, current_price, atr, mult)
+        if new_trail is not None and new_trail != pos.trail_stop:
+            ctx.broker.set_position_stops(pos.symbol, trail_stop=new_trail)
 
-        time.sleep(settings.strategy.scan_interval_seconds)
+        # 3. Defensive: if the position has no stop_loss (crash between
+        #    fill and attach), set one from current ATR.
+        if pos.stop_loss is None:
+            side = Side.BUY if pos.qty > 0 else Side.SELL
+            recomputed = atr_stop_price(
+                pos.avg_price, atr, ctx.settings.risk.stop_atr_multiplier, side,
+            )
+            ctx.broker.set_position_stops(pos.symbol, stop_loss=recomputed)
+            logger.warning(
+                "[{}] {} missing stop_loss — rebuilt from ATR → {:.2f}",
+                trace_id, pos.symbol, recomputed,
+            )
+
+        # 4. Time stop.
+        decision = check_time_stop(pos, current_price, atr, ts, ctx.settings.risk)
+        if decision.close_now:
+            report = _close_position(ctx, pos, "time_stop", trace_id)
+            if report:
+                exits.append(report)
+    return exits
+
+
+def _exit_triggered(pos: Position, candle) -> str | None:
+    """Did the candle range touch any protective level? Returns the
+    reason label or None."""
+    if pos.qty > 0:  # long
+        if pos.stop_loss is not None and candle.low <= pos.stop_loss:
+            return "stop_loss"
+        if pos.trail_stop is not None and candle.low <= pos.trail_stop:
+            return "trail_stop"
+        if pos.take_profit is not None and candle.high >= pos.take_profit:
+            return "take_profit"
+    else:  # short
+        if pos.stop_loss is not None and candle.high >= pos.stop_loss:
+            return "stop_loss"
+        if pos.trail_stop is not None and candle.high >= pos.trail_stop:
+            return "trail_stop"
+        if pos.take_profit is not None and candle.low <= pos.take_profit:
+            return "take_profit"
+    return None
+
+
+def _close_position(
+    ctx: ScanContext, pos: Position, reason: str, trace_id: str,
+) -> ExitReport | None:
+    side = Side.SELL if pos.qty > 0 else Side.BUY
+    qty = abs(pos.qty)
+    try:
+        order = ctx.broker.place_order(pos.symbol, qty, side, OrderType.MARKET)
+    except Exception as exc:  # pragma: no cover — broker failure
+        logger.error("[{}] close {} failed: {}", trace_id, pos.symbol, exc)
+        return None
+    logger.info(
+        "[{}] EXIT {} reason={} qty={} order={}",
+        trace_id, pos.symbol, reason, qty, order.id,
+    )
+    return ExitReport(symbol=pos.symbol, reason=reason, order_id=order.id)
+
+
+def _squareoff_all(
+    ctx: ScanContext, ts: datetime, trace_id: str,
+) -> list[ExitReport]:
+    exits: list[ExitReport] = []
+    for pos in list(ctx.broker.get_positions()):
+        report = _close_position(ctx, pos, "eod_squareoff", trace_id)
+        if report:
+            exits.append(report)
+    return exits
+
+
+# ---------------------------------------------------------------- #
+# APScheduler production wrapper                                    #
+# ---------------------------------------------------------------- #
+
+def run_scan_loop(ctx: ScanContext) -> None:
+    """Production entry point. Blocks forever; Ctrl-C to stop.
+
+    Uses APScheduler's ``BlockingScheduler`` with an ``IntervalTrigger``
+    keyed off ``settings.strategy.scan_interval_seconds`` (default 300s =
+    5 minutes). Tests use ``run_tick`` directly — no scheduler needed.
+    """
+    from apscheduler.schedulers.blocking import BlockingScheduler
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    logger.info(
+        "Scan loop starting | mode={} broker={} universe={} interval={}s",
+        ctx.settings.mode,
+        ctx.settings.broker,
+        len(ctx.universe),
+        ctx.settings.strategy.scan_interval_seconds,
+    )
+
+    scheduler = BlockingScheduler(timezone=str(now_ist().tzinfo))
+    scheduler.add_job(
+        lambda: _safe_run_tick(ctx),
+        IntervalTrigger(seconds=ctx.settings.strategy.scan_interval_seconds),
+        next_run_time=now_ist(),
+    )
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):  # pragma: no cover
+        logger.info("Scan loop interrupted — shutting down")
+        scheduler.shutdown()
+
+
+def _safe_run_tick(ctx: ScanContext) -> None:
+    """Wrap ``run_tick`` so a bug in one tick doesn't kill the scheduler."""
+    try:
+        run_tick(ctx)
+    except Exception as exc:  # pragma: no cover
+        logger.exception("scan tick crashed: {}", exc)

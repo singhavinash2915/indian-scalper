@@ -190,6 +190,27 @@ def candles_from_csv(path: str | Path) -> list[Candle]:
     return out
 
 
+def df_to_candles(df) -> list[Candle]:
+    """Convert an OHLCV DataFrame (with a DatetimeIndex) into a list of
+    ``Candle``. Mostly useful for wiring strategy-engine fixtures into
+    the ``FakeCandleFetcher``.
+    """
+    out: list[Candle] = []
+    for ts, row in df.iterrows():
+        py_ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+        out.append(
+            Candle(
+                ts=py_ts,
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+                volume=int(row["volume"]),
+            )
+        )
+    return out
+
+
 def build_synthetic_candles(
     start: datetime,
     interval_minutes: int,

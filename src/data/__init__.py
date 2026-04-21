@@ -9,6 +9,7 @@ from data.market_data import (
     build_synthetic_candles,
     candles_from_csv,
     candles_to_csv,
+    df_to_candles,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "build_synthetic_candles",
     "candles_from_csv",
     "candles_to_csv",
+    "df_to_candles",
 ]

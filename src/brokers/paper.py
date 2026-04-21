@@ -171,6 +171,34 @@ class PaperBroker(BrokerBase):
         self.om.mark_to_market(self._ltp)
         self.om.snapshot_equity()
 
+    def set_position_stops(
+        self,
+        symbol: str,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        trail_stop: float | None = None,
+    ) -> None:
+        """Attach or update protective levels on an existing position.
+
+        The scan loop calls this right after an entry fills — at that
+        point it has the ATR-derived stop / take-profit from sizing but
+        the position was just created without them. No-op if the symbol
+        isn't in the position book.
+        """
+        from dataclasses import replace
+
+        pos = self.om.positions.get(symbol)
+        if pos is None:
+            return
+        updated = replace(
+            pos,
+            stop_loss=stop_loss if stop_loss is not None else pos.stop_loss,
+            take_profit=take_profit if take_profit is not None else pos.take_profit,
+            trail_stop=trail_stop if trail_stop is not None else pos.trail_stop,
+        )
+        self.om.positions[symbol] = updated
+        self.store.save_position(updated)
+
     # ------------------------------------------------------------------ #
     # BrokerBase: portfolio reads                                         #
     # ------------------------------------------------------------------ #

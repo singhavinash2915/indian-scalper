@@ -6,6 +6,54 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 6 — Scan loop
+
+- **feat(scheduler):** full rewrite of `src/scheduler/scan_loop.py`.
+  Integrates every earlier deliverable into a single tick pipeline:
+  kill switch → market-hours + holidays (D2) → candle fetch + settle
+  (D4) → attach stashed stops to filled entries → EOD square-off gate
+  (D5) → position management (stops/TP/trail/time stop) →
+  portfolio-level gates (daily loss, drawdown; D5) → per-symbol
+  evaluate (score + size + place, D3 + D5). Every tick gets a
+  trace_id stamped into the returned `TickReport` and logged on every
+  decision.
+- **feat(scheduler):** `run_tick(ctx, ts)` is a pure tick pass —
+  deterministic enough to scenario-test without APScheduler.
+  `run_scan_loop(ctx)` is the production wrapper that uses
+  APScheduler `BlockingScheduler` + `IntervalTrigger` keyed on
+  `scan_interval_seconds`.
+- **feat(scheduler):** `ScanContext` dataclass wraps settings, broker,
+  universe, instruments master, optional holiday calendar, and the
+  scan loop's `pending_stops` dict (order_id → (stop, tp)). Stops are
+  stashed at entry and applied to the position on the next settle —
+  if the loop crashes between fill and attach, the management branch
+  notices a missing `stop_loss` and rebuilds from current ATR.
+- **feat(scheduler):** drawdown circuit latches the kill switch.
+  When the drawdown gate blocks entries, the scan loop flips
+  `StateStore.set_flag("kill_switch", "1")` so downstream ticks are
+  fully locked out. Daily-loss halt does *not* latch — auto-releases
+  at the next session as intended.
+- **feat(brokers):** `PaperBroker.set_position_stops(symbol, stop_loss,
+  take_profit, trail_stop)` — partial-update helper used by the scan
+  loop to attach ATR-derived stops after a position fills and to
+  ratchet trailing stops on each tick.
+- **feat(data):** `data.market_data.df_to_candles(df)` — converts an
+  OHLCV DataFrame (with DatetimeIndex) back to `list[Candle]`, the
+  glue that lets the D3 synthetic fixtures feed the broker's
+  FakeCandleFetcher in scan-loop tests.
+- **test(scheduler):** 15 new scenarios in `tests/test_scan_loop.py`:
+    * kill switch skips entire tick
+    * market closed / holiday skips
+    * bullish signal → entry placed + stops stashed
+    * flat chop → no signal
+    * two-tick flow: entry → settle → stops applied to position
+    * no double-up on existing position
+    * EOD square-off closes every position
+    * stop_loss / take_profit / trail_stop / time_stop exits fire
+    * daily-loss halt blocks entries
+    * drawdown circuit latches kill switch → next tick locked out
+    * outside entry window still manages existing positions
+
 ### Deliverable 5 — Risk engine
 
 - **feat(risk):** `src/risk/position_sizing.py` — `position_size(...)`
