@@ -37,5 +37,8 @@ config.yaml
 *.db
 *.db-journal
 
+# Per-session operator notes (not for version control).
+*_LOG.md
+
 # --- Notebooks ---
 .ipynb_checkpoints/

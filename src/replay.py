@@ -64,7 +64,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     interval = args.interval or settings.strategy.candle_interval
     fetcher = YFinanceFetcher()
 
-    out_dir = Path(args.out or f"data/candles/dry_run_{args.date}")
+    default_stem = args.date or datetime.now(IST).date().isoformat()
+    out_dir = Path(args.out or f"data/candles/dry_run_{default_stem}")
     logger.info(
         "Fetching {} symbols · interval={} · date_hint={} · out={}",
         len(symbols), interval, args.date, out_dir,
@@ -201,8 +202,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", default="config.yaml", type=Path)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p_fetch = sub.add_parser("fetch", help="pull candles for a date")
-    p_fetch.add_argument("--date", default=(datetime.now(IST).date()).isoformat())
+    p_fetch = sub.add_parser(
+        "fetch",
+        help="pull candles (full 60-day yfinance window; optional --date filter)",
+    )
+    p_fetch.add_argument(
+        "--date",
+        help="ISO date — when set, keeps only bars from this IST day. "
+             "Omit to keep the full 60-day history (needed for harness warmup).",
+    )
     p_fetch.add_argument("--symbols", help="comma-separated; default = enabled universe")
     p_fetch.add_argument("--interval", help="default = strategy.candle_interval")
     p_fetch.add_argument("--out", help="default = data/candles/dry_run_<date>/")
