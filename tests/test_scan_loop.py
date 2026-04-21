@@ -21,7 +21,7 @@ from data.holidays import HolidayCalendar
 from data.instruments import InstrumentMaster
 from data.market_data import FakeCandleFetcher, df_to_candles
 from scheduler.scan_loop import ScanContext, run_tick
-from tests.fixtures import paper_mode
+from tests.fixtures import paper_mode, running_scheduler
 from tests.fixtures.synthetic import bullish_breakout_df, flat_chop_df
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -63,6 +63,11 @@ def _build_ctx(
         candle_fetcher=fetcher,
         instruments=instruments,
     )
+    # D11 Slice 1 — scheduler_state defaults to "stopped" on first init,
+    # which would short-circuit every run_tick in this suite. Flip it
+    # to "running" here so existing tests exercise the full pipeline;
+    # tests that specifically verify stopped/paused branches override.
+    running_scheduler(broker)
     return ScanContext(
         settings=settings,
         broker=broker,
@@ -90,8 +95,11 @@ def test_kill_switch_skips_whole_tick(tmp_path: Path) -> None:
     ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
     ctx.broker.set_kill_switch(True)
     report = run_tick(ctx, T_ENTRY)
-    assert report.skipped_reason == "kill_switch"
+    # D11 Slice 1: kill-switch short-circuit reason is now "killed".
+    # A first kill tick with a running scheduler also square-offs + stops.
+    assert report.skipped_reason == "killed"
     assert report.signals == []
+    assert ctx.broker.store.get_flag("scheduler_state") == "stopped"
 
 
 def test_market_closed_skips(tmp_path: Path) -> None:
@@ -361,9 +369,10 @@ def test_drawdown_circuit_latches_kill_switch(tmp_path: Path) -> None:
     assert ctx.broker.is_kill_switch_on() is True
     assert "kill_switch_set_by_drawdown" in report.notes
 
-    # Next tick is fully locked out.
+    # Next tick is fully locked out — kill check sees scheduler already
+    # stopped (by the drawdown inline square-off) and short-circuits.
     next_report = run_tick(ctx, T_ENTRY + timedelta(minutes=5))
-    assert next_report.skipped_reason == "kill_switch"
+    assert next_report.skipped_reason == "killed"
 
 
 # ---------------------------------------------------------------- #
@@ -378,3 +387,142 @@ def test_outside_entry_window_manages_only(tmp_path: Path) -> None:
     report = run_tick(ctx, ts)
     assert report.signals == []
     assert "outside_entry_window" in report.notes
+
+
+# ---------------------------------------------------------------- #
+# D11 Slice 1 — scheduler state machine                             #
+# ---------------------------------------------------------------- #
+
+def test_scheduler_stopped_short_circuits(tmp_path: Path) -> None:
+    """When scheduler_state=stopped (the first-run default), run_tick
+    exits before fetching anything."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    ctx.broker.store.set_flag("scheduler_state", "stopped", actor="test")
+    report = run_tick(ctx, T_ENTRY)
+    assert report.skipped_reason == "scheduler_stopped"
+    assert report.signals == []
+    assert report.exits == []
+
+
+def test_paused_skips_scoring_but_updates_ltps(tmp_path: Path) -> None:
+    """Paused state: no scoring, no orders, but mark-to-market + equity
+    snapshot still run so the dashboard stays alive."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    # Open a position first to have something to mark.
+    from brokers.base import OrderType, Side
+    ctx.broker.place_order("RELIANCE", 10, Side.BUY, OrderType.MARKET, ts=T_ENTRY)
+    bullish = _bullish_candles()
+    ctx.broker.settle("RELIANCE", bullish[-1])
+    assert len(ctx.broker.get_positions()) == 1
+    equity_rows_before = len(ctx.broker.store.load_equity_curve())
+
+    ctx.broker.store.set_flag("scheduler_state", "paused", actor="test")
+    # Advance the fetcher's latest candle so LTP changes.
+    new_bar = Candle(
+        ts=bullish[-1].ts + timedelta(minutes=15),
+        open=bullish[-1].close, high=bullish[-1].close + 5,
+        low=bullish[-1].close - 1, close=bullish[-1].close + 3, volume=1000,
+    )
+    ctx.broker.fetcher._series["RELIANCE"].append(new_bar)  # type: ignore[attr-defined]
+
+    report = run_tick(ctx, T_ENTRY + timedelta(minutes=15))
+    assert report.skipped_reason == "paused"
+    assert report.signals == []
+    assert report.exits == []
+    # LTP refreshed.
+    assert ctx.broker._ltp["RELIANCE"] == new_bar.close
+    # Equity snapshot written during paused refresh.
+    assert len(ctx.broker.store.load_equity_curve()) > equity_rows_before
+
+
+def test_paused_does_not_fill_pending_orders(tmp_path: Path) -> None:
+    """Pending orders stay pending across a paused tick — settle is
+    skipped entirely while paused."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    from brokers.base import OrderType, Side
+
+    ctx.broker.store.set_flag("scheduler_state", "paused", actor="test")
+    pending = ctx.broker.place_order(
+        "RELIANCE", 5, Side.BUY, OrderType.LIMIT, price=900.0, ts=T_ENTRY,
+    )
+    # Append a candle that would trigger the limit fill if settle ran.
+    last = _bullish_candles()[-1]
+    touch_candle = Candle(
+        ts=last.ts + timedelta(minutes=15),
+        open=last.close, high=last.close + 1,
+        low=899.0, close=last.close - 1, volume=1000,
+    )
+    ctx.broker.fetcher._series["RELIANCE"].append(touch_candle)  # type: ignore[attr-defined]
+
+    run_tick(ctx, T_ENTRY + timedelta(minutes=15))
+
+    # Still pending — settle never ran under paused.
+    assert pending.id in ctx.broker.orders
+    assert ctx.broker.orders[pending.id].status == "PENDING"
+
+
+def test_kill_tick_squares_off_and_stops(tmp_path: Path) -> None:
+    """A first kill tick with a running scheduler and open positions
+    generates exit orders AND pins scheduler_state=stopped."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    from brokers.base import OrderType, Side
+
+    # Open a position first.
+    ctx.broker.place_order("RELIANCE", 10, Side.BUY, OrderType.MARKET, ts=T_ENTRY)
+    ctx.broker.settle("RELIANCE", _bullish_candles()[-1])
+    assert len(ctx.broker.get_positions()) == 1
+
+    # Flip kill switch — simulating the UI click.
+    ctx.broker.set_kill_switch(True, actor="web")
+
+    report = run_tick(ctx, T_ENTRY + timedelta(minutes=15))
+    assert report.skipped_reason == "killed"
+    assert any(e.reason == "kill_switch" for e in report.exits)
+    assert "killed_squared_off" in report.notes
+    # Scheduler pinned to stopped.
+    assert ctx.broker.store.get_flag("scheduler_state") == "stopped"
+
+
+def test_already_killed_and_stopped_just_skips(tmp_path: Path) -> None:
+    """Second kill tick (kill + stopped already in place) short-circuits
+    silently — no second square-off attempt."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    ctx.broker.store.set_flag("scheduler_state", "stopped", actor="test")
+    ctx.broker.set_kill_switch(True, actor="test")
+
+    report = run_tick(ctx, T_ENTRY)
+    assert report.skipped_reason == "killed"
+    assert report.exits == []
+    assert "killed_squared_off" not in report.notes
+
+
+def test_drawdown_breach_squares_off_inline(tmp_path: Path) -> None:
+    """When drawdown trips during the same tick, positions are squared
+    off IN THAT TICK — no waiting for the next cycle."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    from brokers.base import OrderType, Side
+
+    # Open a position so there's something to square off.
+    ctx.broker.place_order("RELIANCE", 10, Side.BUY, OrderType.MARKET, ts=T_ENTRY)
+    ctx.broker.settle("RELIANCE", _bullish_candles()[-1])
+
+    # Seed a big drawdown: peak 600k, now 500k → 16.7% breach.
+    ctx.broker.store.snapshot_equity(
+        datetime(2026, 4, 19, 14, 0, tzinfo=IST),
+        equity=600_000, cash=500_000, pnl=100_000,
+    )
+    ctx.broker.store.snapshot_equity(
+        datetime(2026, 4, 20, 9, 15, tzinfo=IST),
+        equity=500_000, cash=500_000, pnl=0,
+    )
+    ctx.broker.om.cash = 500_000
+
+    report = run_tick(ctx, T_ENTRY)
+    # Portfolio-halt path fired.
+    assert "halted" in (report.skipped_reason or "")
+    assert "kill_switch_set_by_drawdown" in report.notes
+    # Square-off ran inline (not waiting for next tick).
+    assert any(e.reason == "drawdown_circuit" for e in report.exits)
+    # Scheduler pinned to stopped + kill latched.
+    assert ctx.broker.store.get_flag("scheduler_state") == "stopped"
+    assert ctx.broker.is_kill_switch_on() is True

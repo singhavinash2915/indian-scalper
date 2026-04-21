@@ -6,6 +6,84 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 11 — Slice 1 — Scheduler controls (pause / resume / kill / rearm)
+
+- **feat(scheduler):** ``run_tick`` now obeys a full state machine
+  driven by two control_flags keys:
+
+    ``kill_switch``      — ``armed`` (default) → ``tripped``.
+                            When tripped on a running scheduler, the
+                            current tick squares off *every* open
+                            position with ``intent="exit"`` (bypassing
+                            watch-only so the exits actually land) and
+                            pins ``scheduler_state = "stopped"``. Later
+                            ticks while already stopped short-circuit
+                            silently.
+    ``scheduler_state``  — ``stopped`` (first-run default) | ``paused``
+                            | ``running``. ``stopped`` skips the tick
+                            entirely. ``paused`` refreshes LTPs (new
+                            ``_refresh_ltps`` heartbeat — fetch last
+                            candle + mark-to-market + equity snapshot,
+                            no ``settle``, no management, no orders)
+                            then returns. ``running`` runs the full
+                            original pipeline.
+- **feat(scheduler):** the drawdown-circuit breach now squares off
+  positions **in the same tick** rather than waiting for the next
+  cycle — removes a 5-minute exposure window on a severe breach.
+  The inline exits are tagged ``reason="drawdown_circuit"`` in
+  ``ExitReport`` so the dashboard / audit trail distinguishes them
+  from EOD or manual kills.
+- **feat(scheduler):** ``_squareoff_all`` grows a ``reason`` param
+  (``"eod_squareoff"`` / ``"kill_switch"`` / ``"drawdown_circuit"``).
+  ``TickReport.exits`` surfaces the specific reason for downstream
+  display.
+- **feat(dashboard):** control endpoints.
+    * ``GET /api/control/state`` — JSON ``{status, scheduler_state,
+      kill_switch, can_pause, can_resume, can_kill, can_rearm, audit}``.
+      Status pill is derived here (``RUNNING`` / ``PAUSED`` /
+      ``STOPPED`` / ``KILLED``) so the UI renders a single label
+      without client-side state-machine logic.
+    * ``POST /api/control/pause`` / ``POST /api/control/resume`` —
+      single-step. Both 409 if ``kill_switch = tripped``.
+    * ``POST /api/control/kill/prepare`` → confirm token + warnings +
+      open-positions count. ``POST /api/control/kill/apply`` →
+      verifies token, flips the flag (scan loop does the rest on
+      next tick). The UI adds a 3-second hold between modal open
+      and Confirm-enabled.
+    * ``POST /api/control/rearm`` — clears kill_switch but does NOT
+      auto-resume. Operator presses Resume separately.
+- **feat(dashboard):** controls partial (``GET /partials/controls``)
+  + audit drawer partial (``GET /partials/audit``). Controls panel
+  polls every 2s, drawer every 5s + on ``controls-changed`` /
+  ``mode-changed`` custom events. Audit drawer collapsed by default.
+- **feat(dashboard):** kill modal with a 3-second progress-bar
+  countdown before Confirm enables. Cancelling the modal clears the
+  minted token; apply round-trips ``kill/apply``.
+- **refactor(dashboard):** retired the D8 "Kill switch ON/OFF" inline
+  panel in favour of the new state-pill + four-button controls. The
+  legacy ``/actions/{kill,unkill}`` endpoints still exist for
+  external callers (they write the same flag, audited as ``actor=
+  "web"``).
+- **test(scheduler):** 6 new scan-loop tests — stopped short-circuit,
+  paused skips scoring/management/settle but updates LTPs + equity,
+  paused does NOT fill pending orders, kill-tick squares off + pins
+  stopped, already-killed-and-stopped skips silently, drawdown-breach
+  squares off inline in the same tick.
+- **test(scheduler):** updated 2 prior tests to the new
+  ``skipped_reason == "killed"`` label (was ``"kill_switch"``) and
+  the new auto-stop-on-kill contract.
+- **test(dashboard):** 14 new control-endpoint tests — default state
+  shape, killed state + rearm availability, controls partial HTML,
+  audit partial rows, pause/resume flips, resume/pause 409 when kill
+  tripped, kill prepare/apply flow + token replay across actions
+  (mode_change token fails against kill — (action, target) binding
+  is what stops replay), rearm clears flag but doesn't resume,
+  every control action writes ``operator_audit`` with ``actor="web"``.
+- **test(fixtures):** ``tests/fixtures/running_scheduler(broker)``
+  helper so tests that expect ``run_tick`` to exercise the full
+  pipeline can opt into the scheduler running state. Threaded
+  through ``_build_ctx`` + backtest ``_build``.
+
 ### Deliverable 11 — Slice 0 — Trade mode (watch_only / paper / live)
 
 - **feat(trade-mode):** `src/brokers/trade_mode.py` — single module that

@@ -293,6 +293,151 @@ def test_mode_apply_writes_audit_row(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------- #
+# Control endpoints (D11 Slice 1)                                   #
+# ---------------------------------------------------------------- #
+
+def test_control_state_default_shape(client: TestClient) -> None:
+    r = client.get("/api/control/state")
+    assert r.status_code == 200
+    body = r.json()
+    # First-run defaults after broker init.
+    assert body["scheduler_state"] == "stopped"
+    assert body["kill_switch"] == "armed"
+    assert body["status"] == "STOPPED"
+    # Button-enable hints match the status.
+    assert body["can_resume"] is True
+    assert body["can_pause"] is False
+    assert body["can_kill"] is True
+    assert body["can_rearm"] is False
+    assert "audit" in body
+
+
+def test_control_state_reports_killed_status(client: TestClient) -> None:
+    client.broker.set_kill_switch(True, actor="test")  # type: ignore[attr-defined]
+    body = client.get("/api/control/state").json()
+    assert body["status"] == "KILLED"
+    assert body["kill_switch"] == "tripped"
+    assert body["can_rearm"] is True
+    assert body["can_kill"] is False  # already tripped
+
+
+def test_controls_partial_renders_buttons(client: TestClient) -> None:
+    html = client.get("/partials/controls").text
+    assert "STOPPED" in html
+    assert 'data-action="pause"' in html
+    assert 'data-action="resume"' in html
+    assert 'data-action="kill"' in html
+    assert 'data-action="rearm"' in html
+
+
+def test_audit_partial_shows_recent_rows(client: TestClient) -> None:
+    # Seed an audit row via a flag write.
+    client.broker.store.set_flag("trade_mode", "watch_only", actor="web")  # type: ignore[attr-defined]
+    html = client.get("/partials/audit").text
+    assert "flag_set:trade_mode" in html
+    assert "web" in html
+
+
+# ---- pause / resume ----
+
+def test_pause_flips_scheduler_state(client: TestClient) -> None:
+    client.broker.store.set_flag("scheduler_state", "running", actor="test")  # type: ignore[attr-defined]
+    r = client.post("/api/control/pause")
+    assert r.status_code == 200
+    assert r.json()["scheduler_state"] == "paused"
+    assert client.broker.store.get_flag("scheduler_state") == "paused"  # type: ignore[attr-defined]
+
+
+def test_resume_flips_scheduler_state(client: TestClient) -> None:
+    r = client.post("/api/control/resume")
+    assert r.status_code == 200
+    assert r.json()["scheduler_state"] == "running"
+
+
+def test_resume_rejected_when_kill_tripped(client: TestClient) -> None:
+    client.broker.set_kill_switch(True, actor="test")  # type: ignore[attr-defined]
+    r = client.post("/api/control/resume")
+    assert r.status_code == 409
+    assert "kill" in r.json()["detail"].lower()
+
+
+def test_pause_rejected_when_kill_tripped(client: TestClient) -> None:
+    client.broker.set_kill_switch(True, actor="test")  # type: ignore[attr-defined]
+    r = client.post("/api/control/pause")
+    assert r.status_code == 409
+
+
+# ---- kill flow ----
+
+def test_kill_prepare_returns_token_and_warnings(client: TestClient) -> None:
+    r = client.post("/api/control/kill/prepare")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["token"]
+    assert body["expires_at"] > 0
+    assert any("squared off" in w.lower() for w in body["warnings"])
+
+
+def test_kill_apply_flips_kill_switch(client: TestClient) -> None:
+    prep = client.post("/api/control/kill/prepare").json()
+    r = client.post("/api/control/kill/apply", json={"token": prep["token"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kill_switch"] == "tripped"
+    assert client.broker.is_kill_switch_on() is True  # type: ignore[attr-defined]
+
+
+def test_kill_apply_rejects_bad_token(client: TestClient) -> None:
+    r = client.post("/api/control/kill/apply", json={"token": "123.deadbeef"})
+    assert r.status_code == 403
+
+
+def test_kill_apply_rejects_mode_change_token(client: TestClient) -> None:
+    """A confirm token minted for mode_change must not verify against
+    the kill endpoint — (action, target) binding is what stops replay."""
+    mode_prep = client.post("/api/mode/prepare", json={"target": "watch_only"}).json()
+    r = client.post("/api/control/kill/apply", json={"token": mode_prep["token"]})
+    assert r.status_code == 403
+
+
+# ---- rearm ----
+
+def test_rearm_clears_kill_but_does_not_resume(client: TestClient) -> None:
+    """Per spec: rearm clears the flag, scheduler_state stays put —
+    operator must press Resume consciously."""
+    # Simulate a prior kill cycle.
+    client.broker.set_kill_switch(True, actor="test")  # type: ignore[attr-defined]
+    client.broker.store.set_flag("scheduler_state", "stopped", actor="test")  # type: ignore[attr-defined]
+
+    r = client.post("/api/control/rearm")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kill_switch"] == "armed"
+    assert body["scheduler_state"] == "stopped"  # NOT auto-resumed
+    assert client.broker.is_kill_switch_on() is False  # type: ignore[attr-defined]
+
+
+def test_every_control_action_appends_operator_audit(client: TestClient) -> None:
+    """Each kv flag write goes through set_flag, which already audits.
+    Rearm (via broker.set_kill_switch) must also leave an audit trail."""
+    client.post("/api/control/pause")
+    client.post("/api/control/resume")
+
+    prep = client.post("/api/control/kill/prepare").json()
+    client.post("/api/control/kill/apply", json={"token": prep["token"]})
+    client.post("/api/control/rearm")
+
+    audit = client.broker.store.load_operator_audit(limit=50)  # type: ignore[attr-defined]
+    actions = [r["action"] for r in audit]
+    # Each state change wrote a flag_set:scheduler_state / flag_set:kill_switch row.
+    assert any("flag_set:scheduler_state" in a for a in actions)
+    assert any("flag_set:kill_switch" in a for a in actions)
+    # The actor for UI actions is "web".
+    web_rows = [r for r in audit if r["actor"] == "web"]
+    assert len(web_rows) >= 3
+
+
+# ---------------------------------------------------------------- #
 # Log tail                                                          #
 # ---------------------------------------------------------------- #
 

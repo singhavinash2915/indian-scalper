@@ -1,20 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
 
-<!-- Trade-mode pill + three-way switch — polled every 3s -->
-<div class="panel" style="margin-bottom: 16px; display: flex; align-items: center; gap: 20px;">
-  <div style="color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;">
-    Trade mode
+<!-- Top control bar: mode pill (left) + scheduler controls (right) -->
+<div class="grid" style="grid-template-columns: 1fr 1fr; margin-bottom: 16px;">
+  <div class="panel" style="display: flex; align-items: center; gap: 16px;">
+    <div style="color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;">
+      Trade mode
+    </div>
+    <div id="mode-pill-host"
+         hx-get="/partials/mode_pill"
+         hx-trigger="load, every 3s, mode-changed from:body"
+         hx-swap="innerHTML">
+      <span class="empty">Loading…</span>
+    </div>
   </div>
-  <div id="mode-pill-host"
-       hx-get="/partials/mode_pill"
-       hx-trigger="load, every 3s, mode-changed from:body"
-       hx-swap="innerHTML">
-    <span class="empty">Loading…</span>
-  </div>
-  <div class="spacer"></div>
-  <div style="color: var(--muted); font-size: 12px;">
-    Clicking a mode shows a confirm dialog. No change without explicit confirm.
+  <div class="panel" style="display: flex; align-items: center; gap: 16px;">
+    <div style="color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;">
+      Scheduler
+    </div>
+    <div id="control-panel-host" style="flex: 1;"
+         hx-get="/partials/controls"
+         hx-trigger="load, every 2s, controls-changed from:body"
+         hx-swap="innerHTML">
+      <span class="empty">Loading controls…</span>
+    </div>
   </div>
 </div>
 
@@ -33,27 +42,31 @@
     <div id="equity-curve" style="width:100%; height: 340px;"></div>
   </section>
 
-  <!-- Actions -->
+  <!-- Legacy kill-switch panel retired in D11 Slice 1 — replaced by the
+       scheduler controls in the top bar. /actions/{kill,unkill} still
+       work for API-level callers. -->
   <section class="panel">
-    <h2>Controls</h2>
-    <div class="flex" style="margin-bottom: 10px;">
-      <button hx-post="/actions/kill"
-              hx-swap="none"
-              hx-on::after-request="htmx.trigger('#kpis', 'refresh')"
-              class="danger">Kill switch ON</button>
-      <button hx-post="/actions/unkill"
-              hx-swap="none"
-              hx-on::after-request="htmx.trigger('#kpis', 'refresh')">
-        Kill switch OFF
-      </button>
-    </div>
+    <h2>Scheduler cheat-sheet</h2>
     <div class="empty">
-      Toggling the kill switch sets the SQLite flag the scan loop polls
-      every tick. Turning it ON halts all new entries; existing positions
-      are still managed.
+      <b>Pause</b> holds scoring/ordering; LTPs + equity still refresh.<br>
+      <b>KILL</b> squares off everything at market + stops the scheduler
+      (requires a 3-second hold).<br>
+      <b>Re-arm</b> clears the kill flag but does NOT resume — press
+      Resume explicitly when you're ready.
     </div>
   </section>
 </div>
+
+<!-- Operator-audit drawer (last 20 actions) — collapsed by default -->
+<details class="audit-drawer" style="margin-top: 16px;">
+  <summary>Operator audit (last 20) ▸</summary>
+  <div id="audit-drawer"
+       hx-get="/partials/audit"
+       hx-trigger="load, every 5s, controls-changed from:body, mode-changed from:body"
+       hx-swap="innerHTML">
+    <span class="empty">Loading…</span>
+  </div>
+</details>
 
 <!-- Positions — refresh every 5s -->
 <div class="panel" style="margin-top: 16px;">
@@ -218,6 +231,125 @@
     });
     cancelBtn.addEventListener('click', close);
     confirmBtn.addEventListener('click', apply);
+  })();
+</script>
+
+<!-- Kill confirm modal — 3s hold before Confirm becomes clickable -->
+<div class="modal-backdrop" id="kill-modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="kill-modal-title">
+    <h3 id="kill-modal-title" style="color: var(--bad);">Emergency kill</h3>
+    <div id="kill-modal-body">
+      Pressing Confirm will square off all open positions at market and
+      stop the scheduler. The 3-second countdown is a deliberate pause —
+      nothing happens if you close this modal.
+    </div>
+    <div id="kill-modal-extra" class="warn-list"></div>
+    <div id="kill-progress"><div id="kill-progress-fill"></div></div>
+    <div class="err" id="kill-modal-err"></div>
+    <div class="actions">
+      <button id="kill-modal-cancel">Cancel</button>
+      <button id="kill-modal-confirm" class="danger" disabled>Confirm kill</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Control buttons (pause/resume/rearm single-click, kill 3s-hold).
+  (function() {
+    async function simplePost(path) {
+      try {
+        const res = await fetch(path, { method: 'POST' });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({detail: 'request failed'}));
+          alert(body.detail || 'request failed');
+          return;
+        }
+        document.body.dispatchEvent(new CustomEvent('controls-changed'));
+      } catch (e) { alert(String(e)); }
+    }
+
+    const killModal = document.getElementById('kill-modal');
+    const killProgressFill = document.getElementById('kill-progress-fill');
+    const killExtra = document.getElementById('kill-modal-extra');
+    const killErr = document.getElementById('kill-modal-err');
+    const killCancelBtn = document.getElementById('kill-modal-cancel');
+    const killConfirmBtn = document.getElementById('kill-modal-confirm');
+
+    let killToken = null;
+    let killTimerHandle = null;
+    const HOLD_MS = 3000;
+
+    function closeKill() {
+      killModal.classList.remove('open');
+      killToken = null;
+      killProgressFill.style.width = '0%';
+      killConfirmBtn.disabled = true;
+      if (killTimerHandle) { clearTimeout(killTimerHandle); killTimerHandle = null; }
+    }
+
+    async function startKill() {
+      killExtra.innerHTML = '';
+      killErr.innerText = '';
+      killProgressFill.style.width = '0%';
+      killConfirmBtn.disabled = true;
+      try {
+        const res = await fetch('/api/control/kill/prepare', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { killErr.innerText = data.detail || 'prepare failed'; killModal.classList.add('open'); return; }
+        killToken = data.token;
+        (data.warnings || []).forEach(w => {
+          const li = document.createElement('div');
+          li.innerText = '⚠ ' + w;
+          killExtra.appendChild(li);
+        });
+        killModal.classList.add('open');
+
+        // 3s progress bar, then enable Confirm.
+        const start = Date.now();
+        function tick() {
+          const elapsed = Date.now() - start;
+          const pct = Math.min(100, (elapsed / HOLD_MS) * 100);
+          killProgressFill.style.width = pct + '%';
+          if (elapsed >= HOLD_MS) {
+            killConfirmBtn.disabled = false;
+          } else {
+            killTimerHandle = setTimeout(tick, 80);
+          }
+        }
+        tick();
+      } catch (e) { killErr.innerText = String(e); killModal.classList.add('open'); }
+    }
+
+    async function applyKill() {
+      if (!killToken) return;
+      try {
+        const res = await fetch('/api/control/kill/apply', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ token: killToken }),
+        });
+        const data = await res.json();
+        if (!res.ok) { killErr.innerText = data.detail || 'apply failed'; return; }
+        closeKill();
+        document.body.dispatchEvent(new CustomEvent('controls-changed'));
+      } catch (e) { killErr.innerText = String(e); }
+    }
+
+    killCancelBtn.addEventListener('click', closeKill);
+    killConfirmBtn.addEventListener('click', applyKill);
+
+    // Delegate clicks on ctrl-btn — the partial re-renders every 2s so
+    // bind at the document level.
+    document.addEventListener('click', ev => {
+      const btn = ev.target.closest('.ctrl-btn');
+      if (!btn || btn.disabled) return;
+      const action = btn.dataset.action;
+      if (!action) return;
+      if (action === 'pause') simplePost('/api/control/pause');
+      else if (action === 'resume') simplePost('/api/control/resume');
+      else if (action === 'rearm') simplePost('/api/control/rearm');
+      else if (action === 'kill') startKill();
+    });
   })();
 </script>
 

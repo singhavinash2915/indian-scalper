@@ -126,18 +126,51 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
     trace_id = uuid.uuid4().hex[:8]
     report = TickReport(trace_id=trace_id, ts=ts)
 
-    # 1. Kill switch (user-flipped or circuit-breaker-set).
+    store = ctx.broker.store
+
+    # 1. Kill switch (emergency override).
+    #    Kill is MORE than a skip: square off every open position with
+    #    ``intent="exit"`` (bypassing trade_mode watch_only since exits
+    #    always flow) and pin ``scheduler_state = "stopped"`` so the
+    #    scheduler won't resume until the operator re-arms. Once already
+    #    stopped, subsequent ticks just skip silently.
     if ctx.broker.is_kill_switch_on():
-        report.skipped_reason = "kill_switch"
-        logger.warning("[{}] kill switch on — skipping tick", trace_id)
+        current_state = store.get_flag("scheduler_state", "stopped")
+        if current_state != "stopped":
+            report.exits.extend(
+                _squareoff_all(ctx, ts, trace_id, reason="kill_switch")
+            )
+            store.set_flag("scheduler_state", "stopped", actor="kill_switch")
+            report.notes.append("killed_squared_off")
+            logger.warning(
+                "[{}] KILL SWITCH tripped — squared off {} positions, "
+                "scheduler_state → stopped",
+                trace_id, len(report.exits),
+            )
+        report.skipped_reason = "killed"
         return report
 
-    # 2. Market hours (incl. holidays).
+    # 2. Scheduler state — explicit operator gate (Slice 1).
+    scheduler_state = store.get_flag("scheduler_state", "stopped")
+    if scheduler_state == "stopped":
+        report.skipped_reason = "scheduler_stopped"
+        return report
+
+    # 3. Market hours (incl. holidays).
     if not is_market_open(ctx.settings, ts, calendar=ctx.calendar):
         report.skipped_reason = "market_closed"
         return report
 
-    # 3. Fetch latest candles + settle pending orders for every symbol
+    # 4. PAUSED mode: keep market data fresh (so the dashboard stays
+    #    alive) but skip every order-producing path. No settle — that
+    #    would fill any stale pending orders; operator wants a full
+    #    hold. LTPs and equity curve snapshots only.
+    if scheduler_state == "paused":
+        _refresh_ltps(ctx, trace_id)
+        report.skipped_reason = "paused"
+        return report
+
+    # 5. Fetch latest candles + settle pending orders for every symbol
     #    that matters (universe ∪ currently-open).
     symbols = set(ctx.universe) | {p.symbol for p in ctx.broker.get_positions()}
     candles_by_symbol: dict[str, list] = {}
@@ -164,7 +197,7 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
                     trace_id, f.symbol, stop, tp,
                 )
 
-    # 4. EOD square-off — close every intraday position and stop.
+    # 6. EOD square-off — close every intraday position and stop.
     if (
         ctx.settings.risk.eod_squareoff_intraday
         and is_eod_squareoff_time(ts, ctx.settings.market)
@@ -173,19 +206,20 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
         report.skipped_reason = "eod_squareoff"
         return report
 
-    # 5. Manage existing positions: stops, trailing, time stop.
+    # 7. Manage existing positions: stops, trailing, time stop.
     report.exits.extend(_manage_positions(ctx, candles_by_symbol, ts, trace_id))
 
-    # 6. Entry window check.
+    # 8. Entry window check.
     if not can_enter_new_trade(ctx.settings, ts, calendar=ctx.calendar):
         report.notes.append("outside_entry_window")
         return report
 
-    # 7. Portfolio-level gates (daily loss, drawdown). Kill-switch flip
-    #    happens *here* when drawdown trips — downstream ticks are
-    #    locked out via the kill switch check at step 1.
+    # 9. Portfolio-level gates (daily loss, drawdown). Drawdown-circuit
+    #    trip is immediate: kill switch flipped, positions squared off
+    #    in the same tick, scheduler_state pinned to stopped. No
+    #    waiting for the next scheduler cycle to act on a breach.
     funds = ctx.broker.get_funds()
-    equity_curve = ctx.broker.store.load_equity_curve()
+    equity_curve = store.load_equity_curve()
     peak = peak_equity_from_curve(equity_curve)
     sod = start_of_day_equity(equity_curve, ts) or ctx.settings.capital.starting_inr
 
@@ -196,10 +230,13 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
     if not portfolio_gate.allow_new_entries:
         report.skipped_reason = f"halted:{portfolio_gate.reason}"
         logger.warning("[{}] portfolio halt: {}", trace_id, portfolio_gate.reason)
-        # Drawdown circuit is not auto-release — latch the kill switch.
         dd_gate = check_drawdown_circuit(funds["equity"], peak, ctx.settings.risk)
         if not dd_gate.allow_new_entries:
             ctx.broker.set_kill_switch(True, actor="drawdown_circuit")
+            report.exits.extend(
+                _squareoff_all(ctx, ts, trace_id, reason="drawdown_circuit")
+            )
+            store.set_flag("scheduler_state", "stopped", actor="drawdown_circuit")
             report.notes.append("kill_switch_set_by_drawdown")
         return report
 
@@ -426,14 +463,47 @@ def _close_position(
 
 
 def _squareoff_all(
-    ctx: ScanContext, ts: datetime, trace_id: str,
+    ctx: ScanContext,
+    ts: datetime,
+    trace_id: str,
+    reason: str = "eod_squareoff",
 ) -> list[ExitReport]:
+    """Close every open position with an exit-intent MARKET order.
+
+    ``reason`` is passed through to the ``ExitReport`` so the dashboard
+    / audit trail distinguishes EOD square-offs from kill-switch
+    square-offs from drawdown-circuit square-offs.
+    """
     exits: list[ExitReport] = []
     for pos in list(ctx.broker.get_positions()):
-        report = _close_position(ctx, pos, "eod_squareoff", trace_id, ts=ts)
+        report = _close_position(ctx, pos, reason, trace_id, ts=ts)
         if report:
             exits.append(report)
     return exits
+
+
+def _refresh_ltps(ctx: ScanContext, trace_id: str) -> None:
+    """Paused-mode heartbeat — fetch the last candle for every open
+    position + every universe symbol, feed the closes into the broker's
+    mark-to-market so LTP / equity curve stay fresh on the dashboard.
+    No ``settle``, so no pending order fills; no management, so no
+    exit orders. True observe-only tick."""
+    symbols = set(ctx.universe) | {p.symbol for p in ctx.broker.get_positions()}
+    if not symbols:
+        return
+    ltps: dict[str, float] = {}
+    for sym in symbols:
+        try:
+            candles = ctx.broker.get_candles(
+                sym, ctx.settings.strategy.candle_interval, lookback=1,
+            )
+        except Exception as exc:
+            logger.warning("[{}] paused-mode fetch {} failed: {}", trace_id, sym, exc)
+            continue
+        if candles:
+            ltps[sym] = candles[-1].close
+    if ltps:
+        ctx.broker.mark_to_market(ltps)
 
 
 # ---------------------------------------------------------------- #

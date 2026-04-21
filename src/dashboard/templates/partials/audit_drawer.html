@@ -1,0 +1,30 @@
+{# Operator-audit drawer contents — last 20 rows. The <details>
+   wrapper in dashboard.html handles collapse/expand. Polled by
+   HTMX every 5s. #}
+{% if rows %}
+<table>
+  <thead>
+    <tr>
+      <th>When (IST)</th><th>Actor</th><th>Action</th>
+      <th>Payload</th><th>Trace</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td>{{ r.ts.replace('T', ' ')[:19] }}</td>
+      <td>{{ r.actor }}</td>
+      <td>{{ r.action }}</td>
+      <td class="small">
+        {% if r.payload %}
+          {{ r.payload | tojson }}
+        {% else %}—{% endif %}
+      </td>
+      <td class="small">{{ r.trace_id or '—' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No operator actions yet.</div>
+{% endif %}

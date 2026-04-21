@@ -1,0 +1,22 @@
+{# Controls panel — status pill + pause/resume/kill/rearm buttons.
+   Polled every 2s by the dashboard. Mutations are POSTs handled by
+   the JS in dashboard.html (pause/resume/rearm are single-click,
+   kill is a 3-second-hold modal). #}
+{% set status_class =
+    'status-running'  if status == 'RUNNING'
+    else 'status-paused' if status == 'PAUSED'
+    else 'status-killed' if status == 'KILLED'
+    else 'status-stopped' %}
+<div class="control-panel" id="control-panel-inner" data-status="{{ status }}">
+  <div class="status-pill {{ status_class }}">{{ status }}</div>
+  <div class="control-buttons">
+    <button class="ctrl-btn" data-action="pause"
+            {% if not can_pause %}disabled{% endif %}>Pause</button>
+    <button class="ctrl-btn" data-action="resume"
+            {% if not can_resume %}disabled{% endif %}>Resume</button>
+    <button class="ctrl-btn danger" data-action="kill"
+            {% if not can_kill %}disabled{% endif %}>KILL</button>
+    <button class="ctrl-btn" data-action="rearm"
+            {% if not can_rearm %}disabled{% endif %}>Re-arm</button>
+  </div>
+</div>

@@ -16,3 +16,14 @@ def paper_mode(settings: Settings) -> Settings:
     """
     settings.raw.setdefault("runtime", {})["initial_trade_mode"] = "paper"
     return settings
+
+
+def running_scheduler(broker, actor: str = "test") -> None:
+    """Flip ``scheduler_state`` to ``running`` on a freshly-built
+    broker so ``run_tick`` doesn't short-circuit on the initial
+    ``stopped`` default (per D11 Slice 1). Call immediately after
+    broker construction in tests that exercise the full tick pipeline.
+    Tests that specifically verify the stopped/paused branches should
+    omit this helper.
+    """
+    broker.store.set_flag("scheduler_state", "running", actor=actor)

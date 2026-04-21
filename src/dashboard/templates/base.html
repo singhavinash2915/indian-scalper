@@ -130,6 +130,56 @@
     border-radius: 6px; font-family: inherit;
   }
   .modal .err { color: var(--bad); font-size: 12px; margin-top: 6px; min-height: 16px; }
+
+  /* ---- Controls panel (D11 Slice 1) ---- */
+  .control-panel { display: flex; align-items: center; gap: 14px; }
+  .control-buttons { display: inline-flex; gap: 6px; }
+  .status-pill {
+    display: inline-block; padding: 7px 14px; border-radius: 999px;
+    font-weight: 700; font-size: 12px; letter-spacing: 0.12em;
+    border: 1px solid var(--border);
+  }
+  .status-running { background: #0f2d18; color: #7de28a; border-color: #1f5a34; }
+  .status-paused  { background: #3a2e10; color: #f0b552; border-color: #6b5320; }
+  .status-stopped { background: #1c232d; color: #9099a6; border-color: #30363d; }
+  .status-killed  { background: #4a1414; color: #ffa7a7; border-color: #8b2222;
+                    animation: blink 1.2s linear infinite; }
+  .ctrl-btn {
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+    padding: 6px 12px; border-radius: 6px; font-size: 12px;
+    cursor: pointer; font-weight: 600;
+  }
+  .ctrl-btn:hover:not(:disabled) { background: #2a3444; }
+  .ctrl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .ctrl-btn.danger {
+    border-color: var(--bad); color: var(--bad); background: #2a1010;
+  }
+  .ctrl-btn.danger:hover:not(:disabled) { background: #3a1818; }
+
+  /* ---- Kill modal: 3s countdown hold ---- */
+  #kill-progress {
+    height: 4px; width: 100%; background: #2a2a2a; border-radius: 2px;
+    overflow: hidden; margin-top: 10px;
+  }
+  #kill-progress-fill {
+    height: 100%; width: 0%; background: var(--bad);
+    transition: width 100ms linear;
+  }
+
+  /* ---- Audit drawer ---- */
+  details.audit-drawer {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin-top: 16px;
+  }
+  details.audit-drawer > summary {
+    cursor: pointer; font-size: 13px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--muted); font-weight: 600;
+    list-style: none;
+  }
+  details.audit-drawer > summary::-webkit-details-marker { display: none; }
+  details.audit-drawer[open] > summary { margin-bottom: 10px; }
+  .audit-drawer td.small, .audit-drawer th { font-size: 11px; }
+  .audit-drawer td { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
 </style>
 </head>
 <body>

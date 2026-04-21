@@ -66,6 +66,10 @@ class ModeApplyBody(BaseModel):
     token: str
 
 
+class KillApplyBody(BaseModel):
+    token: str
+
+
 def create_app(
     broker: PaperBroker,
     settings: Settings,
@@ -233,6 +237,90 @@ def create_app(
             request, "partials/mode_pill.html", _mode_status_context(state),
         )
 
+    # ---------------- Controls (D11 Slice 1) ----------------
+
+    @app.get("/api/control/state")
+    def control_state() -> JSONResponse:
+        return JSONResponse(_control_state_context(state))
+
+    @app.get("/partials/controls", response_class=HTMLResponse)
+    def controls_partial(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request, "partials/controls.html", _control_state_context(state),
+        )
+
+    @app.get("/partials/audit", response_class=HTMLResponse)
+    def audit_partial(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request, "partials/audit_drawer.html",
+            {"rows": state.broker.store.load_operator_audit(limit=20)},
+        )
+
+    @app.post("/api/control/pause")
+    def control_pause() -> JSONResponse:
+        # Refuse to pause when kill has latched — operator must rearm
+        # + resume consciously, not pause the dead scheduler.
+        if state.broker.is_kill_switch_on():
+            raise HTTPException(409, "kill switch is tripped; rearm first")
+        state.broker.store.set_flag("scheduler_state", "paused", actor="web")
+        return JSONResponse({"ok": True, "scheduler_state": "paused"})
+
+    @app.post("/api/control/resume")
+    def control_resume() -> JSONResponse:
+        if state.broker.is_kill_switch_on():
+            raise HTTPException(
+                409, "kill switch is tripped; rearm before resuming",
+            )
+        state.broker.store.set_flag("scheduler_state", "running", actor="web")
+        return JSONResponse({"ok": True, "scheduler_state": "running"})
+
+    @app.post("/api/control/rearm")
+    def control_rearm() -> JSONResponse:
+        """Clear the kill switch. Explicitly does NOT resume — the
+        operator must press Resume separately, on purpose."""
+        state.broker.set_kill_switch(False, actor="web")
+        return JSONResponse(
+            {
+                "ok": True,
+                "kill_switch": "armed",
+                "scheduler_state": state.broker.store.get_flag(
+                    "scheduler_state", "stopped",
+                ),
+            }
+        )
+
+    @app.post("/api/control/kill/prepare")
+    def control_kill_prepare() -> JSONResponse:
+        token, expires_at = state.confirm_tokens.issue("control_kill", "kill")
+        positions = state.broker.get_positions()
+        return JSONResponse(
+            {
+                "token": token,
+                "expires_at": expires_at,
+                "open_positions_count": len(positions),
+                "warnings": [
+                    "All open positions will be squared off at market immediately.",
+                    "Scheduler will be stopped. Rearm + Resume to restart.",
+                ],
+            }
+        )
+
+    @app.post("/api/control/kill/apply")
+    def control_kill_apply(body: KillApplyBody) -> JSONResponse:
+        if not state.confirm_tokens.verify("control_kill", "kill", body.token):
+            raise HTTPException(403, "confirm token invalid or expired")
+        # Flip the flag — scan loop's next tick does the square-off.
+        # Dashboard is decoupled from scheduler per architectural
+        # principle ("UI publishes intent by writing to SQLite").
+        state.broker.set_kill_switch(True, actor="web")
+        return JSONResponse(
+            {
+                "ok": True,
+                "kill_switch": "tripped",
+                "note": "scheduler will square off open positions + stop on next tick",
+            }
+        )
+
     # ---------------- Health ----------------
 
     @app.get("/health")
@@ -261,6 +349,45 @@ def _mode_status_context(state: DashboardState) -> dict:
         "mode": mode,
         "live_acknowledged": live_trading_acknowledged(),
         "modes": list(VALID_TRADE_MODES),
+    }
+
+
+def _control_state_context(state: DashboardState) -> dict:
+    """Shared context for the controls partial + /api/control/state.
+
+    Derives a single ``status`` label (``RUNNING`` / ``PAUSED`` /
+    ``STOPPED`` / ``KILLED``) that the UI pill renders directly, plus
+    the raw flags so the endpoint JSON is useful to non-HTMX clients,
+    plus the last 20 operator-audit rows for the drawer.
+    """
+    store = state.broker.store
+    scheduler_state = store.get_flag("scheduler_state", "stopped")
+    kill = store.get_flag("kill_switch", "armed")
+
+    if kill == "tripped":
+        status = "KILLED"
+    elif scheduler_state == "running":
+        status = "RUNNING"
+    elif scheduler_state == "paused":
+        status = "PAUSED"
+    else:
+        status = "STOPPED"
+
+    # Which buttons to enable in the UI.
+    can_pause = status == "RUNNING"
+    can_resume = kill == "armed" and scheduler_state in ("stopped", "paused")
+    can_kill = kill == "armed"
+    can_rearm = kill == "tripped"
+
+    return {
+        "status": status,
+        "scheduler_state": scheduler_state,
+        "kill_switch": kill,
+        "can_pause": can_pause,
+        "can_resume": can_resume,
+        "can_kill": can_kill,
+        "can_rearm": can_rearm,
+        "audit": store.load_operator_audit(limit=20),
     }
 
 

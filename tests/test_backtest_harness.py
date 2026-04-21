@@ -20,7 +20,7 @@ from brokers.paper import PaperBroker
 from config.settings import Settings
 from data.instruments import InstrumentMaster
 from data.market_data import df_to_candles
-from tests.fixtures import paper_mode
+from tests.fixtures import paper_mode, running_scheduler
 from scheduler.scan_loop import ScanContext
 from tests.fixtures.synthetic import bullish_breakout_df
 
@@ -54,6 +54,7 @@ def _build(tmp_path: Path, min_score: int = 4) -> tuple[ScanContext, BacktestCan
         candle_fetcher=fetcher,
         instruments=instruments,
     )
+    running_scheduler(broker)  # D11 Slice 1 — see paper-mode note in _build_ctx.
     ctx = ScanContext(
         settings=settings, broker=broker, universe=["RELIANCE"],
         instruments=instruments,
