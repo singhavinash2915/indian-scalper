@@ -31,7 +31,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from loguru import logger
 from tenacity import (
@@ -273,7 +273,10 @@ class UpstoxBroker(BrokerBase):
         order_type: OrderType,
         price: float | None = None,
         trigger_price: float | None = None,
+        *,
+        intent: Literal["entry", "exit"] = "entry",
     ) -> Order:
+        _ = intent  # trade-mode enforcement hooks in via Slice 0
         if qty <= 0:
             raise ValueError(f"qty must be positive, got {qty}")
 
@@ -396,11 +399,13 @@ class UpstoxBroker(BrokerBase):
     # Kill switch — StateStore flag (same as PaperBroker)                 #
     # ------------------------------------------------------------------ #
 
-    def set_kill_switch(self, on: bool = True) -> None:
-        self.store.set_flag("kill_switch", "1" if on else "0")
+    def set_kill_switch(self, on: bool = True, actor: str = "system") -> None:
+        self.store.set_flag(
+            "kill_switch", "tripped" if on else "armed", actor=actor,
+        )
 
     def is_kill_switch_on(self) -> bool:
-        return self.store.get_flag("kill_switch", "0") == "1"
+        return self.store.get_flag("kill_switch", "armed") == "tripped"
 
     def update_server_kill_switch(self, segment: str = "EQ", on: bool = True) -> None:
         """Optional server-side kill switch — flips the Upstox-side

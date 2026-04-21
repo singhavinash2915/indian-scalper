@@ -199,7 +199,7 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
         # Drawdown circuit is not auto-release — latch the kill switch.
         dd_gate = check_drawdown_circuit(funds["equity"], peak, ctx.settings.risk)
         if not dd_gate.allow_new_entries:
-            ctx.broker.set_kill_switch(True)
+            ctx.broker.set_kill_switch(True, actor="drawdown_circuit")
             report.notes.append("kill_switch_set_by_drawdown")
         return report
 
@@ -309,9 +309,13 @@ def _evaluate_symbol(
         return None
 
     order = ctx.broker.place_order(
-        symbol, size.qty, Side.BUY, OrderType.MARKET, ts=ts,
+        symbol, size.qty, Side.BUY, OrderType.MARKET,
+        intent="entry", ts=ts,
     )
-    ctx.pending_stops[order.id] = (stop, tp)
+    # Only stash stops if the order was actually accepted — a trade-mode
+    # rejection returns a non-PENDING order the broker never queues.
+    if order.status == "PENDING":
+        ctx.pending_stops[order.id] = (stop, tp)
 
     logger.info(
         "[{}] SIGNAL {} qty={} entry={:.2f} stop={:.2f} tp={:.2f} score={}/8",
@@ -408,7 +412,8 @@ def _close_position(
     qty = abs(pos.qty)
     try:
         order = ctx.broker.place_order(
-            pos.symbol, qty, side, OrderType.MARKET, ts=ts,
+            pos.symbol, qty, side, OrderType.MARKET,
+            intent="exit", ts=ts,
         )
     except Exception as exc:  # pragma: no cover — broker failure
         logger.error("[{}] close {} failed: {}", trace_id, pos.symbol, exc)

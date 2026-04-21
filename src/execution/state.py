@@ -10,9 +10,17 @@ Schema:
 * ``positions``      — open positions, one row per symbol. Row is DELETED
                        when qty returns to zero; full history lives in audit.
 * ``equity_curve``   — one row per mark-to-market snapshot.
-* ``audit_log``      — append-only journal of every state change. Kept
-                       for compliance + debugging.
-* ``kv``             — simple key/value store for flags (kill switch etc.).
+* ``audit_log``      — append-only journal of broker / order state changes.
+* ``control_flags``  — operator control plane: ``trade_mode``,
+                       ``scheduler_state``, ``kill_switch`` and friends.
+                       UI publishes intent by writing here; the scheduler +
+                       brokers read at call-time.
+* ``operator_audit`` — append-only journal of operator actions (mode
+                       changes, pause/resume, kill). Separate from
+                       ``audit_log`` so trade-side and operator-side
+                       history don't tangle.
+* ``kv``             — legacy simple key/value store. Kept for backward
+                       compatibility; new code should use control_flags.
 
 Timestamps are stored as ISO-8601 strings. Prices and quantities are
 floats and ints respectively. Nothing fancy — this is a local file, not
@@ -84,6 +92,23 @@ CREATE TABLE IF NOT EXISTS kv (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS control_flags (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT 'system'
+);
+
+CREATE TABLE IF NOT EXISTS operator_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    payload_json TEXT,
+    trace_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_operator_audit_ts ON operator_audit(ts);
 """
 
 
@@ -294,27 +319,123 @@ class StateStore:
         return out
 
     # ------------------------------------------------------------------ #
-    # Key/value (kill switch, etc.)                                       #
+    # Control flags — operator control plane (trade_mode, scheduler      #
+    # _state, kill_switch). Every set writes a row to operator_audit.    #
     # ------------------------------------------------------------------ #
 
-    def set_flag(self, key: str, value: str) -> None:
+    def set_flag(
+        self,
+        key: str,
+        value: str,
+        actor: str = "system",
+        *,
+        trace_id: str | None = None,
+    ) -> None:
+        """Set a control flag and append a matching operator-audit row.
+
+        ``actor`` identifies who triggered the change — ``"web"`` for
+        dashboard-originated writes, ``"scheduler"`` for latched-by-risk
+        trips, ``"system"`` for init/seed.
+        """
+        now_iso = datetime.now(IST).isoformat()
         with self._conn() as c:
+            # Snapshot previous value for the audit payload.
+            prev_row = c.execute(
+                "SELECT value FROM control_flags WHERE key = ?", (key,),
+            ).fetchone()
+            previous = prev_row["value"] if prev_row else None
+
             c.execute(
                 """
-                INSERT INTO kv(key, value, updated_at) VALUES (?, ?, ?)
+                INSERT INTO control_flags(key, value, updated_at, updated_by)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value=excluded.value,
-                    updated_at=excluded.updated_at
+                    updated_at=excluded.updated_at,
+                    updated_by=excluded.updated_by
                 """,
-                (key, value, datetime.now(IST).isoformat()),
+                (key, value, now_iso, actor),
+            )
+            c.execute(
+                "INSERT INTO operator_audit(ts, actor, action, payload_json, trace_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    now_iso, actor, f"flag_set:{key}",
+                    json.dumps({"value": value, "previous": previous}),
+                    trace_id,
+                ),
             )
 
     def get_flag(self, key: str, default: str | None = None) -> str | None:
         with self._conn() as c:
             row = c.execute(
-                "SELECT value FROM kv WHERE key = ?", (key,)
+                "SELECT value FROM control_flags WHERE key = ?", (key,),
             ).fetchone()
         return row["value"] if row else default
+
+    def load_control_flags(self) -> dict[str, dict[str, Any]]:
+        """All flags with their audit metadata — used by the UI state
+        endpoint."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT key, value, updated_at, updated_by FROM control_flags ORDER BY key",
+            ).fetchall()
+        return {r["key"]: dict(r) for r in rows}
+
+    def ensure_initial_flags(self, defaults: dict[str, str], actor: str = "system_init") -> list[str]:
+        """Seed control flags that don't yet exist. Returns the list of
+        keys that were actually inserted (so callers can audit first-run
+        vs subsequent starts)."""
+        inserted: list[str] = []
+        for key, value in defaults.items():
+            if self.get_flag(key) is None:
+                self.set_flag(key, value, actor=actor)
+                inserted.append(key)
+        return inserted
+
+    # ------------------------------------------------------------------ #
+    # Operator audit (append-only) — operator control-plane actions.      #
+    # Separate from ``audit_log`` which journals broker/order events.    #
+    # ------------------------------------------------------------------ #
+
+    def append_operator_audit(
+        self,
+        action: str,
+        *,
+        actor: str = "system",
+        payload: dict[str, Any] | None = None,
+        trace_id: str | None = None,
+        ts: datetime | None = None,
+    ) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO operator_audit(ts, actor, action, payload_json, trace_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    (ts or datetime.now(IST)).isoformat(),
+                    actor, action,
+                    json.dumps(payload) if payload is not None else None,
+                    trace_id,
+                ),
+            )
+
+    def load_operator_audit(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, ts, actor, action, payload_json, trace_id "
+                "FROM operator_audit ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            row = dict(r)
+            if row.get("payload_json"):
+                row["payload"] = json.loads(row["payload_json"])
+            else:
+                row["payload"] = None
+            row.pop("payload_json", None)
+            out.append(row)
+        return out
 
 
 # ---------------------------------------------------------------------- #

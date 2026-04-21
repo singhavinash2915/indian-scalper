@@ -132,7 +132,20 @@ class BrokerBase(ABC):
         order_type: OrderType,
         price: float | None = None,
         trigger_price: float | None = None,
-    ) -> Order: ...
+        *,
+        intent: Literal["entry", "exit"] = "entry",
+    ) -> Order:
+        """Submit an order.
+
+        ``intent`` tells the broker whether the order opens new risk
+        (``"entry"``) or reduces existing risk (``"exit"``). In
+        ``watch_only`` trade mode the broker blocks ``"entry"`` orders
+        unconditionally but still honours ``"exit"`` so stops, trailing
+        stops, and EOD square-off can drain existing positions safely.
+        Default is ``"entry"`` — errs on the side of blocking when the
+        caller forgets to annotate.
+        """
+        ...
 
     @abstractmethod
     def modify_order(self, order_id: str, **kwargs: object) -> Order: ...

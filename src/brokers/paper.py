@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -136,12 +137,17 @@ class PaperBroker(BrokerBase):
         order_type: OrderType,
         price: float | None = None,
         trigger_price: float | None = None,
+        *,
+        intent: Literal["entry", "exit"] = "entry",
         ts: datetime | None = None,
     ) -> Order:
-        """Paper-specific extension over ``BrokerBase.place_order``: accepts
-        an optional ``ts`` so backtest and dry-run drivers can pin the
-        order's timestamp to the simulated tick time. Falls back to
-        ``datetime.now(IST)`` when omitted (live-ish paper mode)."""
+        """Paper-specific extension over ``BrokerBase.place_order``.
+
+        Accepts an optional ``ts`` so backtest and dry-run drivers can
+        pin the order's timestamp to the simulated tick time, and an
+        ``intent`` kwarg used by trade-mode enforcement (see D11 Slice 0).
+        """
+        _ = intent  # used by the trade-mode check added in Slice 0
         return self.om.submit(
             symbol=symbol, qty=qty, side=side, order_type=order_type,
             price=price, trigger_price=trigger_price, ts=ts,
@@ -221,14 +227,17 @@ class PaperBroker(BrokerBase):
         }
 
     # ------------------------------------------------------------------ #
-    # Kill switch — writes a KV flag that the scan loop polls every tick  #
+    # Kill switch — a control_flags entry the scan loop polls every tick. #
+    # Values: "armed" (default, trading allowed) | "tripped" (halt).      #
     # ------------------------------------------------------------------ #
 
-    def set_kill_switch(self, on: bool = True) -> None:
-        self.store.set_flag("kill_switch", "1" if on else "0")
+    def set_kill_switch(self, on: bool = True, actor: str = "system") -> None:
+        self.store.set_flag(
+            "kill_switch", "tripped" if on else "armed", actor=actor,
+        )
 
     def is_kill_switch_on(self) -> bool:
-        return self.store.get_flag("kill_switch", "0") == "1"
+        return self.store.get_flag("kill_switch", "armed") == "tripped"
 
 
 def _default_fetcher() -> CandleFetcher:

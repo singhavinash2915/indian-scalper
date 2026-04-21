@@ -135,12 +135,12 @@ def create_app(
 
     @app.post("/actions/kill")
     def action_kill() -> JSONResponse:
-        state.broker.set_kill_switch(True)
+        state.broker.set_kill_switch(True, actor="web")
         return JSONResponse({"ok": True, "kill_switch": True})
 
     @app.post("/actions/unkill")
     def action_unkill() -> JSONResponse:
-        state.broker.set_kill_switch(False)
+        state.broker.set_kill_switch(False, actor="web")
         return JSONResponse({"ok": True, "kill_switch": False})
 
     # ---------------- Health ----------------
