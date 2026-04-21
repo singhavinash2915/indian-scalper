@@ -6,6 +6,45 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 5 — Risk engine
+
+- **feat(risk):** `src/risk/position_sizing.py` — `position_size(...)`
+  returns a `SizeResult` with qty, risk rupees, per-unit risk, notional,
+  and an optional diagnostic note. Formula: `qty = floor((capital ×
+  risk_pct / 100) / |entry − stop|)` rounded down to `lot_size` multiples.
+  Returns qty=0 with a note when inputs are degenerate (entry == stop,
+  zero capital, zero risk_pct). Optional `max_notional` cap enforced
+  on top of the risk-based qty.
+- **feat(risk):** `src/risk/stops.py` — pure functions for
+  `atr_stop_price`, `take_profit_price`, `update_trail_stop`
+  (ratchets only — never loosens), `trailing_multiplier` (selects
+  low/high-vol multiplier by comparing current ATR to the 50-bar
+  median — falls back to the conservative low-vol multiplier when
+  history is too short), `check_time_stop` (aged-out deadband check,
+  returns `TimeStopDecision`), and a tz-aware `minutes_since` helper.
+- **feat(risk):** `src/risk/circuit_breaker.py` — entry-gate stack
+  returning `RiskGate(allow_new_entries, reason)`:
+    * `check_position_limits` (per-segment equity vs F&O caps),
+    * `check_daily_loss_limit` (auto-releases next session),
+    * `check_drawdown_circuit` (manual-reset trip),
+    * `is_eod_squareoff_time` (predicate only — caller triggers
+      square-off),
+    * `combine_gates(...)` short-circuits on the first blocker so its
+      reason surfaces to the caller,
+    * `peak_equity_from_curve` + `start_of_day_equity` helpers that
+      work off of `StateStore.load_equity_curve()` rows so the scan
+      loop (Deliverable 6) doesn't have to re-implement reductions.
+- **test(risk):** 9 tests for position sizing (equity math, F&O lot
+  rounding, degenerate inputs, max-notional cap, short-side math).
+- **test(risk):** 17 tests for stops (initial stops, take-profits,
+  trailing-multiplier regime selection + short-history fallback,
+  ratchet invariants for long and short, time-stop three-way branch
+  + missing-opened_at guard + tz-aware requirement).
+- **test(risk):** 18 tests for circuit breakers (equity/F&O caps,
+  daily-loss threshold, drawdown threshold, EOD predicate boundary,
+  gate combinator short-circuit, equity-curve reducers with and
+  without matching session).
+
 ### Deliverable 4 — PaperBroker + order manager + state persistence
 
 - **feat(execution):** `src/execution/state.py` — `StateStore`, SQLite DAO.
