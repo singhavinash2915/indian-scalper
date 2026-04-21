@@ -612,3 +612,97 @@ def test_empty_registry_falls_back_to_static_universe(tmp_path: Path) -> None:
 
     assert registry.count() == 0
     assert ctx.effective_universe() == ["RELIANCE"]
+
+
+# ---------------------------------------------------------------- #
+# D11 Slice 3 — signal_snapshots at every decision branch           #
+# ---------------------------------------------------------------- #
+
+def test_entered_action_writes_snapshot(tmp_path: Path) -> None:
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    run_tick(ctx, T_ENTRY)
+    rows = ctx.broker.store.load_recent_signals()
+    # At least one row for RELIANCE with the `entered` action.
+    assert any(r["symbol"] == "RELIANCE" and r["action"] == "entered"
+               for r in rows)
+    entered = next(r for r in rows if r["action"] == "entered")
+    assert entered["trade_mode"] == "paper"
+    # Breakdown dict matches the scoring engine's shape.
+    assert {"ema_stack", "vwap_cross", "rsi_entry"}.issubset(entered["breakdown"])
+
+
+def test_skipped_score_writes_snapshot(tmp_path: Path) -> None:
+    """Flat chop → score below min_score → `skipped_score` row."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _flat_candles()})
+    run_tick(ctx, T_ENTRY)
+    rows = ctx.broker.store.load_recent_signals()
+    assert any(r["symbol"] == "RELIANCE" and r["action"] == "skipped_score"
+               for r in rows)
+
+
+def test_watch_only_override_writes_snapshot(tmp_path: Path) -> None:
+    from data.universe import UniverseRegistry
+
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    reg = UniverseRegistry(ctx.broker.store, ctx.instruments)
+    reg.seed_if_empty(["RELIANCE"])
+    reg.set_watch_only_override("RELIANCE", "EQ", True)
+    ctx.universe_registry = reg
+
+    run_tick(ctx, T_ENTRY)
+    rows = ctx.broker.store.load_recent_signals()
+    watch = next(
+        (r for r in rows if r["action"] == "watch_only_logged"), None,
+    )
+    assert watch is not None
+    assert watch["symbol"] == "RELIANCE"
+    assert watch["reason"] == "per_symbol_override"
+    # Score was still computed (not zero for the bullish fixture).
+    assert watch["score"] > 0
+
+
+def test_global_watch_only_writes_snapshot(tmp_path: Path) -> None:
+    """Global trade_mode=watch_only → broker rejects entry → scan loop
+    records a watch_only_logged snapshot with the broker-rejection
+    reason."""
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    ctx.broker.store.set_flag("trade_mode", "watch_only", actor="test")
+
+    run_tick(ctx, T_ENTRY)
+    rows = ctx.broker.store.load_recent_signals()
+    watch = next(
+        (r for r in rows if r["action"] == "watch_only_logged"), None,
+    )
+    assert watch is not None
+    assert "broker_rejection" in watch["reason"]
+    assert watch["trade_mode"] == "watch_only"
+
+
+def test_insufficient_candles_writes_skipped_filter(tmp_path: Path) -> None:
+    short = _bullish_candles()[:10]  # well below MIN_LOOKBACK_BARS
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": short})
+    run_tick(ctx, T_ENTRY)
+    rows = ctx.broker.store.load_recent_signals()
+    assert any(r["action"] == "skipped_filter"
+               and "insufficient_candles" in (r["reason"] or "")
+               for r in rows)
+
+
+def test_prune_old_snapshots_runs_once_per_day(tmp_path: Path) -> None:
+    ctx = _build_ctx(tmp_path, ["RELIANCE"], {"RELIANCE": _bullish_candles()})
+    # Seed an old snapshot (8 days back).
+    from datetime import timedelta as td
+    old_ts = T_ENTRY - td(days=8)
+    ctx.broker.store.append_signal_snapshot(
+        ts=old_ts, symbol="OLD", score=0, breakdown={},
+        action="entered", reason=None, trace_id=None, trade_mode="paper",
+    )
+    pre = ctx.broker.store.load_recent_signals(limit=500)
+    assert any(r["symbol"] == "OLD" for r in pre)
+
+    run_tick(ctx, T_ENTRY)
+
+    post = ctx.broker.store.load_recent_signals(limit=500)
+    assert not any(r["symbol"] == "OLD" for r in post)
+    # Marker set so next tick same day doesn't rerun the DELETE.
+    assert ctx.broker.store.get_flag("last_signal_prune_date") is not None

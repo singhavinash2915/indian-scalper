@@ -46,6 +46,7 @@ from data.universe import (
     UniverseRegistry,
     UnknownSymbolError,
 )
+from strategy import indicators as ind
 from risk.circuit_breaker import (
     peak_equity_from_curve,
     start_of_day_equity,
@@ -618,6 +619,205 @@ def create_app(
             raise HTTPException(400, str(exc))
         return JSONResponse({"ok": True, "summary": summary})
 
+    # ---------------- Signals (D11 Slice 3) ----------------
+
+    @app.get("/signals", response_class=HTMLResponse)
+    def page_signals(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request, "signals.html",
+            {"banner": "PAPER TRADING // NOT FINANCIAL ADVICE"},
+        )
+
+    @app.get("/api/signals/recent")
+    def api_signals_recent(
+        limit: int = 100,
+        min_score: int = 0,
+        actions: str | None = None,
+        trade_modes: str | None = None,
+    ) -> JSONResponse:
+        action_list = [a.strip() for a in actions.split(",")] if actions else None
+        mode_list = [m.strip() for m in trade_modes.split(",")] if trade_modes else None
+        rows = state.broker.store.load_recent_signals(
+            limit=limit,
+            min_score=min_score,
+            actions=action_list,
+            trade_modes=mode_list,
+        )
+        return JSONResponse({"count": len(rows), "signals": rows})
+
+    @app.get("/api/signals/symbol/{symbol}")
+    def api_signals_symbol(symbol: str, lookback_hours: int = 24) -> JSONResponse:
+        rows = state.broker.store.load_signals_for_symbol(
+            symbol, lookback_hours=lookback_hours,
+        )
+        return JSONResponse({"symbol": symbol, "count": len(rows), "signals": rows})
+
+    @app.get("/partials/signals_table", response_class=HTMLResponse)
+    def signals_table_partial(
+        request: Request,
+        limit: int = 100,
+        min_score: int = 0,
+        hide_skipped: bool = False,
+        hide_watch_only: bool = False,
+        segment: str | None = None,
+    ) -> HTMLResponse:
+        actions: list[str] | None = None
+        if hide_skipped and hide_watch_only:
+            actions = ["entered"]
+        elif hide_skipped:
+            actions = ["entered", "watch_only_logged"]
+        elif hide_watch_only:
+            actions = [
+                "entered", "skipped_score", "skipped_filter",
+                "skipped_risk", "skipped_position_cap",
+            ]
+        rows = state.broker.store.load_recent_signals(
+            limit=limit, min_score=min_score, actions=actions,
+        )
+        # Segment filter (client-side via instruments master).
+        if segment:
+            inst_segments = {}
+            for row in rows:
+                sym = row["symbol"]
+                if sym not in inst_segments:
+                    inst = state.broker.instruments.get(sym)
+                    inst_segments[sym] = inst.segment.value if inst else "EQ"
+            rows = [r for r in rows if inst_segments.get(r["symbol"]) == segment]
+
+        return templates.TemplateResponse(
+            request, "partials/signals_table.html",
+            {
+                "rows": rows,
+                "min_score": min_score,
+                "hide_skipped": hide_skipped,
+                "hide_watch_only": hide_watch_only,
+                "segment": segment,
+            },
+        )
+
+    # ---------------- Chart (D11 Slice 3) ----------------
+
+    @app.get("/api/charts/{symbol}")
+    def api_chart(symbol: str, interval: str | None = None, lookback: int = 100) -> JSONResponse:
+        """OHLCV + indicator series for the per-symbol chart drawer.
+
+        Uses the same ``src.strategy.indicators`` functions as the
+        scoring engine — chart and scorer see identical numbers.
+        Divergence here would be a silent bug magnet.
+        """
+        import pandas as pd
+
+        iv = interval or state.settings.strategy.candle_interval
+        # Ask the broker for enough candles to warm the longest
+        # indicator (EMA 50 / MACD 26/9 / Supertrend 10). 120 is the
+        # scoring engine's own lookback.
+        try:
+            candles = state.broker.get_candles(
+                symbol, iv, lookback=max(lookback, 120),
+            )
+        except KeyError as exc:
+            # FakeCandleFetcher-style "never seeded this symbol". Live
+            # fetchers would return [] instead — handled right below.
+            raise HTTPException(404, f"unknown symbol {symbol!r}") from exc
+        if not candles:
+            raise HTTPException(404, f"no candles available for {symbol!r}")
+
+        df = pd.DataFrame(
+            {
+                "open": [c.open for c in candles],
+                "high": [c.high for c in candles],
+                "low": [c.low for c in candles],
+                "close": [c.close for c in candles],
+                "volume": [c.volume for c in candles],
+            },
+            index=pd.DatetimeIndex([c.ts for c in candles], name="ts"),
+        )
+
+        strat = state.settings.strategy
+        series: dict[str, list] = {
+            "ema_fast": _series_to_list(ind.ema(df["close"], strat.ema_fast)),
+            "ema_mid":  _series_to_list(ind.ema(df["close"], strat.ema_mid)),
+            "ema_slow": _series_to_list(ind.ema(df["close"], strat.ema_slow)),
+            "ema_trend": _series_to_list(ind.ema(df["close"], strat.ema_trend)),
+            "vwap": _series_to_list(ind.vwap(df)),
+            "rsi": _series_to_list(ind.rsi(df["close"])),
+            "atr": _series_to_list(ind.atr(df["high"], df["low"], df["close"])),
+            "volume_sma_20": _series_to_list(ind.volume_sma(df["volume"], 20)),
+        }
+        macd = ind.macd(df["close"])
+        series["macd"] = _series_to_list(macd["macd"])
+        series["macd_signal"] = _series_to_list(macd["signal"])
+        series["macd_hist"] = _series_to_list(macd["hist"])
+
+        adx = ind.adx(df["high"], df["low"], df["close"])
+        series["adx"] = _series_to_list(adx["adx"])
+
+        bb = ind.bbands(df["close"], length=20, std=2.0)
+        series["bb_upper"] = _series_to_list(bb["upper"])
+        series["bb_middle"] = _series_to_list(bb["middle"])
+        series["bb_lower"] = _series_to_list(bb["lower"])
+
+        st = ind.supertrend(
+            df["high"], df["low"], df["close"],
+            length=strat.supertrend_period, multiplier=strat.supertrend_multiplier,
+        )
+        series["supertrend_line"] = _series_to_list(st["line"])
+        series["supertrend_direction"] = _series_to_list(st["direction"])
+
+        # Markers: timestamps where the scoring engine fired an
+        # "entered" snapshot, and filled-order events (position open/close).
+        signals = state.broker.store.load_signals_for_symbol(
+            symbol, lookback_hours=24 * 30, limit=500,
+        )
+        strong_signal_ts = [
+            s["ts"] for s in signals
+            if s["score"] >= strat.min_score and s["action"] == "entered"
+        ]
+        watch_logged_ts = [
+            s["ts"] for s in signals
+            if s["score"] >= strat.min_score and s["action"] == "watch_only_logged"
+        ]
+
+        orders = state.broker.store.load_orders(status="FILLED")
+        position_events = [
+            {
+                "ts": o.ts.isoformat(),
+                "side": o.side.value,
+                "price": o.avg_price,
+                "qty": o.filled_qty,
+            }
+            for o in orders if o.symbol == symbol
+        ]
+
+        return JSONResponse(
+            {
+                "symbol": symbol,
+                "interval": iv,
+                "candles": [
+                    {
+                        "ts": c.ts.isoformat(),
+                        "open": c.open, "high": c.high,
+                        "low": c.low, "close": c.close,
+                        "volume": c.volume,
+                    }
+                    for c in candles
+                ],
+                "indicators": series,
+                "markers": {
+                    "strong_signal_ts": strong_signal_ts,
+                    "watch_logged_ts": watch_logged_ts,
+                    "position_events": position_events,
+                },
+                "thresholds": {
+                    "rsi_upper_block": strat.rsi_upper_block,
+                    "rsi_entry_range": list(strat.rsi_entry_range),
+                    "adx_min": strat.adx_min,
+                    "volume_surge_multiplier": strat.volume_surge_multiplier,
+                    "min_score": strat.min_score,
+                },
+            }
+        )
+
     # ---------------- Health ----------------
 
     @app.get("/health")
@@ -736,6 +936,22 @@ def _kpis_context(state: DashboardState) -> dict:
         "kill_switch": broker.is_kill_switch_on(),
         "now": now_ist(),
     }
+
+
+def _series_to_list(series) -> list[float | None]:
+    """Convert a pandas Series to a JSON-safe list (NaN → None)."""
+    import math
+    out: list[float | None] = []
+    for v in series.tolist():
+        try:
+            fv = float(v)
+            if math.isnan(fv) or math.isinf(fv):
+                out.append(None)
+            else:
+                out.append(fv)
+        except (TypeError, ValueError):
+            out.append(None)
+    return out
 
 
 def _tail_log(path: Path | None, max_lines: int) -> list[str]:

@@ -33,7 +33,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -121,6 +121,21 @@ CREATE TABLE IF NOT EXISTS universe_membership (
 );
 CREATE INDEX IF NOT EXISTS idx_universe_enabled ON universe_membership(enabled);
 CREATE INDEX IF NOT EXISTS idx_universe_segment ON universe_membership(segment);
+
+CREATE TABLE IF NOT EXISTS signal_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    breakdown_json TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT,
+    trace_id TEXT,
+    trade_mode TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_signal_snapshots_ts ON signal_snapshots(ts);
+CREATE INDEX IF NOT EXISTS idx_signal_snapshots_symbol ON signal_snapshots(symbol);
+CREATE INDEX IF NOT EXISTS idx_signal_snapshots_action ON signal_snapshots(action);
 """
 
 
@@ -449,6 +464,93 @@ class StateStore:
             out.append(row)
         return out
 
+    # ------------------------------------------------------------------ #
+    # Signal snapshots — D11 Slice 3. One row per scored symbol per      #
+    # tick so the UI + counterfactual queries can answer "what did the    #
+    # engine decide, and why, at every decision point?"                   #
+    # ------------------------------------------------------------------ #
+
+    def append_signal_snapshot(
+        self,
+        *,
+        ts: datetime,
+        symbol: str,
+        score: int,
+        breakdown: dict[str, bool],
+        action: str,
+        reason: str | None,
+        trace_id: str | None,
+        trade_mode: str,
+    ) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO signal_snapshots"
+                "(ts, symbol, score, breakdown_json, action, reason, trace_id, trade_mode) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ts.isoformat(), symbol, int(score),
+                    json.dumps(breakdown), action, reason, trace_id, trade_mode,
+                ),
+            )
+
+    def load_recent_signals(
+        self,
+        *,
+        limit: int = 100,
+        min_score: int = 0,
+        actions: list[str] | None = None,
+        trade_modes: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT id, ts, symbol, score, breakdown_json, action, reason, "
+            "trace_id, trade_mode FROM signal_snapshots"
+        )
+        where: list[str] = []
+        args: list[Any] = []
+        if min_score > 0:
+            where.append("score >= ?")
+            args.append(min_score)
+        if actions:
+            placeholders = ",".join("?" * len(actions))
+            where.append(f"action IN ({placeholders})")
+            args.extend(actions)
+        if trade_modes:
+            placeholders = ",".join("?" * len(trade_modes))
+            where.append(f"trade_mode IN ({placeholders})")
+            args.extend(trade_modes)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(max(1, min(limit, 500)))  # bounded
+
+        with self._conn() as c:
+            rows = c.execute(sql, args).fetchall()
+        return [_signal_row_to_dict(r) for r in rows]
+
+    def load_signals_for_symbol(
+        self, symbol: str, *, lookback_hours: int = 24, limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        cutoff = datetime.now(IST) - timedelta(hours=lookback_hours)
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, ts, symbol, score, breakdown_json, action, "
+                "reason, trace_id, trade_mode FROM signal_snapshots "
+                "WHERE symbol = ? AND ts >= ? ORDER BY id DESC LIMIT ?",
+                (symbol, cutoff.isoformat(), min(limit, 500)),
+            ).fetchall()
+        return [_signal_row_to_dict(r) for r in rows]
+
+    def prune_signal_snapshots_older_than(self, days: int = 7) -> int:
+        """Delete rows older than ``days`` IST days. Returns row count
+        affected. Called once a day from the scan loop (guarded by a
+        kv flag so repeated calls in one day are no-ops)."""
+        cutoff = datetime.now(IST) - timedelta(days=days)
+        with self._conn() as c:
+            cur = c.execute(
+                "DELETE FROM signal_snapshots WHERE ts < ?", (cutoff.isoformat(),),
+            )
+            return cur.rowcount
+
 
 # ---------------------------------------------------------------------- #
 # Row → dataclass helpers                                                 #
@@ -483,3 +585,13 @@ def _row_to_position(row: sqlite3.Row) -> Position:
             if row["opened_at"] else None
         ),
     )
+
+
+def _signal_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    out = dict(row)
+    try:
+        out["breakdown"] = json.loads(out["breakdown_json"])
+    except (TypeError, ValueError):
+        out["breakdown"] = {}
+    out.pop("breakdown_json", None)
+    return out

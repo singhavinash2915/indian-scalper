@@ -6,6 +6,73 @@ conventional-commits style entries.
 
 ## [Unreleased]
 
+### Deliverable 11 — Slice 3 — Signals view + per-symbol charts
+
+- **schema(state):** ``signal_snapshots(id, ts, symbol, score,
+  breakdown_json, action, reason, trace_id, trade_mode)``. Indexed on
+  ``ts`` / ``symbol`` / ``action``. One row per scored symbol per
+  tick — the ground truth the Signals UI + counterfactual queries
+  read from.
+- **feat(state):** StateStore gains ``append_signal_snapshot``,
+  ``load_recent_signals`` (filters: ``limit``, ``min_score``,
+  ``actions``, ``trade_modes``), ``load_signals_for_symbol`` (24-hour
+  lookback default), ``prune_signal_snapshots_older_than(days=7)``.
+  Breakdown stored as JSON; the loader re-hydrates to a dict.
+- **feat(scheduler):** every decision branch in ``_evaluate_symbol``
+  writes a snapshot via a new ``_record_snapshot`` helper — covers
+  ``entered``, ``watch_only_logged`` (per-symbol override + global
+  broker rejection), ``skipped_score``, ``skipped_filter`` (short
+  history, RSI hard block, ATR non-positive), ``skipped_position_cap``
+  (already-long + position-cap gate), ``skipped_risk`` (sized-to-zero).
+  Trade mode captured at decision time so "what would have happened
+  if we'd been live on day X?" is a SQL query away.
+- **feat(scheduler):** ``run_tick`` prunes snapshots older than 7 days
+  at most once per calendar day via a kv-flag guard
+  (``last_signal_prune_date``) — no DELETE on every 5-min tick.
+- **feat(dashboard):** ``GET /signals`` page with an HTMX-polled
+  signals table (5s) + filter controls: min-score slider, hide-skipped
+  toggle, hide-watch-only toggle, segment filter. Row click opens the
+  chart drawer.
+- **feat(dashboard):** ``GET /partials/signals_table`` — colour-coded
+  by score (green ≥6, amber 4–5, grey <4) and action (entered,
+  watch-only-logged, skipped-*). ``GET /api/signals/recent`` + ``GET
+  /api/signals/symbol/{symbol}`` return the raw JSON for scripting
+  and counterfactual queries.
+- **feat(dashboard):** ``GET /api/charts/{symbol}`` — OHLCV + every
+  indicator series ``src.strategy.indicators`` emits (EMA 5/13/34/50,
+  VWAP, MACD + signal + histogram, RSI, ADX, Bollinger Bands,
+  Supertrend line + direction, ATR, volume SMA-20). Uses the same
+  indicator functions as the scoring engine — no parallel
+  implementation that could drift. Also returns marker timestamps
+  for strong-score snapshots + filled-order events so the chart can
+  annotate where the engine acted.
+- **feat(dashboard):** full-width chart drawer (``signals.html``)
+  rendered with Plotly. Candlestick + EMAs + VWAP + Bollinger Bands
+  + Supertrend overlay, plus sub-panels for MACD histogram, RSI
+  (with entry-range + hard-block lines), ADX (with min-threshold
+  line), Volume (with ``volume_surge_multiplier × SMA 20`` line).
+  Refresh button + auto-refresh toggle (off by default — heavy).
+- **feat(dashboard):** Signals tab now enabled in the nav bar (D11
+  Slice 2 had it disabled).
+- **test(state):** 10 new tests in ``tests/test_signal_snapshots.py``
+  — append + load round-trip, newest-first ordering, limit cap,
+  ``min_score`` + ``actions`` + ``trade_modes`` filters, per-symbol
+  scoping, 24-hour lookback cutoff, 7-day pruning, counterfactual
+  query ("score ≥ 6 + watch_only_logged + trade_mode=watch_only").
+- **test(scheduler):** 6 new ``tests/test_scan_loop.py`` tests —
+  snapshot written for ``entered`` + ``skipped_score`` +
+  ``watch_only_logged`` (per-symbol override) + global-watch-only
+  broker rejection + insufficient-candles ``skipped_filter`` + the
+  daily-prune guard.
+- **test(dashboard):** 12 new tests — page renders with nav,
+  ``/api/signals/recent`` empty + populated + ``min_score`` +
+  ``actions`` filters, ``/api/signals/symbol/{symbol}`` scope, table
+  partial hide-skipped + hide-watch + empty-message,
+  ``/api/charts/{symbol}`` candle + indicator shape, **chart
+  indicator parity with ``ind.rsi`` + ``ind.macd`` to
+  1e-9 tolerance** (the PROMPT's "do NOT recompute differently here"
+  guarantee), 404 on unknown symbol, thresholds carry config values.
+
 ### Deliverable 11 — Slice 2 — Universe picker
 
 - **schema(state):** ``universe_membership(symbol, segment, enabled,

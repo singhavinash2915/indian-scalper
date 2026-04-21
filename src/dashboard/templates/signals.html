@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% set current_tab = "signals" %}
+{% block content %}
+
+<!-- Filter bar -->
+<div class="panel" style="margin-bottom: 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+  <label style="color: var(--muted); font-size: 12px;">
+    Min score:
+    <input type="range" id="f-min-score" min="0" max="8" value="0"
+           style="vertical-align: middle; width: 110px;">
+    <span id="f-min-score-label" style="font-weight: 600; color: var(--fg);">0</span>
+  </label>
+  <label style="color: var(--muted); font-size: 12px;">
+    <input type="checkbox" id="f-hide-skipped"> Hide skipped
+  </label>
+  <label style="color: var(--muted); font-size: 12px;">
+    <input type="checkbox" id="f-hide-watch"> Hide watch-only-logged
+  </label>
+  <select id="f-segment"
+          style="padding: 6px 10px; background: var(--bg); color: var(--fg);
+                 border: 1px solid var(--border); border-radius: 6px; font-size: 13px;">
+    <option value="">All segments</option>
+    <option value="EQ">Equity</option>
+    <option value="FUT">Futures</option>
+    <option value="OPT">Options</option>
+  </select>
+  <div class="spacer"></div>
+  <div style="color: var(--muted); font-size: 12px;">
+    Click a row to open the chart drawer.
+  </div>
+</div>
+
+<!-- Signals table -->
+<div class="panel" id="signals-host"
+     hx-get="/partials/signals_table"
+     hx-trigger="load, every 5s, filters-changed from:body"
+     hx-include="[hx-signals-filter]"
+     hx-swap="innerHTML">
+  <span class="empty">Loading signals…</span>
+</div>
+<!-- Hidden inputs HTMX includes on polls so filters propagate. -->
+<input type="hidden" hx-signals-filter name="min_score" id="h-min-score" value="0">
+<input type="hidden" hx-signals-filter name="hide_skipped" id="h-hide-skipped" value="false">
+<input type="hidden" hx-signals-filter name="hide_watch_only" id="h-hide-watch" value="false">
+<input type="hidden" hx-signals-filter name="segment" id="h-segment" value="">
+
+<!-- Chart drawer -->
+<div class="chart-drawer" id="chart-drawer">
+  <div class="chart-box">
+    <div class="chart-head">
+      <h3 id="chart-title">—</h3>
+      <span id="chart-symbol" style="color: var(--muted); font-size: 12px;"></span>
+      <div class="spacer"></div>
+      <label class="auto-refresh">
+        <input type="checkbox" id="chart-auto-refresh"> auto-refresh
+      </label>
+      <button id="chart-refresh">Refresh</button>
+      <button id="chart-close">Close</button>
+    </div>
+    <div id="chart-error" class="err"></div>
+    <div id="chart-candles" style="width: 100%; height: 420px;"></div>
+    <div id="chart-macd"    style="width: 100%; height: 130px;"></div>
+    <div id="chart-rsi"     style="width: 100%; height: 130px;"></div>
+    <div id="chart-adx"     style="width: 100%; height: 130px;"></div>
+    <div id="chart-volume"  style="width: 100%; height: 130px;"></div>
+  </div>
+</div>
+
+<script>
+// --- Signals tab client ---
+(function() {
+  const minScoreSlider = document.getElementById('f-min-score');
+  const minScoreLabel = document.getElementById('f-min-score-label');
+  const hideSkipped = document.getElementById('f-hide-skipped');
+  const hideWatch = document.getElementById('f-hide-watch');
+  const segmentSel = document.getElementById('f-segment');
+
+  const hMinScore = document.getElementById('h-min-score');
+  const hHideSkipped = document.getElementById('h-hide-skipped');
+  const hHideWatch = document.getElementById('h-hide-watch');
+  const hSegment = document.getElementById('h-segment');
+
+  function syncFilters() {
+    minScoreLabel.innerText = minScoreSlider.value;
+    hMinScore.value = minScoreSlider.value;
+    hHideSkipped.value = hideSkipped.checked ? 'true' : 'false';
+    hHideWatch.value = hideWatch.checked ? 'true' : 'false';
+    hSegment.value = segmentSel.value;
+    document.body.dispatchEvent(new CustomEvent('filters-changed'));
+  }
+  [minScoreSlider, hideSkipped, hideWatch, segmentSel].forEach(
+    el => el.addEventListener('input', syncFilters),
+  );
+
+  // Row click → open chart drawer.
+  document.getElementById('signals-host').addEventListener('click', ev => {
+    const row = ev.target.closest('tr.signal-row');
+    if (!row) return;
+    openChartDrawer(row.dataset.symbol);
+  });
+})();
+
+// --- Chart drawer client ---
+(function() {
+  const drawer = document.getElementById('chart-drawer');
+  const errEl = document.getElementById('chart-error');
+  const titleEl = document.getElementById('chart-title');
+  const symbolEl = document.getElementById('chart-symbol');
+  const auto = document.getElementById('chart-auto-refresh');
+  const refreshBtn = document.getElementById('chart-refresh');
+  const closeBtn = document.getElementById('chart-close');
+
+  let currentSymbol = null;
+  let autoHandle = null;
+
+  window.openChartDrawer = async function(symbol) {
+    currentSymbol = symbol;
+    titleEl.innerText = symbol;
+    symbolEl.innerText = '';
+    errEl.innerText = '';
+    drawer.classList.add('open');
+    await render();
+  };
+
+  function closeDrawer() {
+    drawer.classList.remove('open');
+    currentSymbol = null;
+    if (autoHandle) { clearInterval(autoHandle); autoHandle = null; }
+    auto.checked = false;
+  }
+  closeBtn.addEventListener('click', closeDrawer);
+  drawer.addEventListener('click', ev => {
+    if (ev.target === drawer) closeDrawer();  // click backdrop
+  });
+  refreshBtn.addEventListener('click', render);
+  auto.addEventListener('change', () => {
+    if (auto.checked) {
+      autoHandle = setInterval(render, 10_000);
+    } else if (autoHandle) {
+      clearInterval(autoHandle); autoHandle = null;
+    }
+  });
+
+  const BASE_LAYOUT = {
+    paper_bgcolor: '#121821', plot_bgcolor: '#121821',
+    font: { color: '#e6edf3', size: 11 },
+    margin: { l: 50, r: 20, t: 10, b: 30 },
+    xaxis: { gridcolor: '#30363d', tickfont: { size: 10 } },
+    yaxis: { gridcolor: '#30363d', tickfont: { size: 10 } },
+    showlegend: true, legend: { orientation: 'h', font: { size: 10 } },
+  };
+
+  async function render() {
+    if (!currentSymbol) return;
+    errEl.innerText = '';
+    try {
+      const res = await fetch(`/api/charts/${encodeURIComponent(currentSymbol)}`, {
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (!res.ok) { errEl.innerText = data.detail || 'fetch failed'; return; }
+      symbolEl.innerText = `${data.candles.length} candles · interval ${data.interval}`;
+
+      const ts = data.candles.map(c => c.ts);
+      const open = data.candles.map(c => c.open);
+      const high = data.candles.map(c => c.high);
+      const low = data.candles.map(c => c.low);
+      const close = data.candles.map(c => c.close);
+      const volume = data.candles.map(c => c.volume);
+
+      // --- Candlestick + EMAs + VWAP + BB + Supertrend ---
+      const traces = [
+        {
+          type: 'candlestick', x: ts, open, high, low, close, name: currentSymbol,
+          increasing: { line: { color: '#3fb950' } },
+          decreasing: { line: { color: '#f85149' } },
+        },
+        lineTrace(ts, data.indicators.ema_fast, 'EMA 5', '#58a6ff'),
+        lineTrace(ts, data.indicators.ema_mid, 'EMA 13', '#79c0ff'),
+        lineTrace(ts, data.indicators.ema_slow, 'EMA 34', '#a5d8ff'),
+        lineTrace(ts, data.indicators.ema_trend, 'EMA 50', '#d0e7ff'),
+        lineTrace(ts, data.indicators.vwap, 'VWAP', '#f0b552', 2),
+        lineTrace(ts, data.indicators.bb_upper, 'BB upper', '#6e7681', 1, 'dot'),
+        lineTrace(ts, data.indicators.bb_middle, 'BB mid', '#6e7681', 1, 'dot'),
+        lineTrace(ts, data.indicators.bb_lower, 'BB lower', '#6e7681', 1, 'dot'),
+        lineTrace(ts, data.indicators.supertrend_line, 'Supertrend', '#a370f0', 2),
+      ];
+      // Strong-signal + position-event markers.
+      const markerTs = data.markers.strong_signal_ts;
+      if (markerTs.length) {
+        traces.push({
+          type: 'scatter', mode: 'markers', x: markerTs,
+          y: markerTs.map(t => close[ts.indexOf(t)] ?? null),
+          name: 'score ≥ min',
+          marker: { color: '#3fb950', size: 10, symbol: 'triangle-up' },
+        });
+      }
+      if (data.markers.position_events.length) {
+        const buys = data.markers.position_events.filter(e => e.side === 'BUY');
+        const sells = data.markers.position_events.filter(e => e.side === 'SELL');
+        if (buys.length) traces.push({
+          type: 'scatter', mode: 'markers', x: buys.map(e => e.ts),
+          y: buys.map(e => e.price),
+          name: 'BUY fill', marker: { color: '#7de28a', size: 12, symbol: 'circle' },
+        });
+        if (sells.length) traces.push({
+          type: 'scatter', mode: 'markers', x: sells.map(e => e.ts),
+          y: sells.map(e => e.price),
+          name: 'SELL fill', marker: { color: '#f85149', size: 12, symbol: 'circle' },
+        });
+      }
+      Plotly.react('chart-candles', traces, {
+        ...BASE_LAYOUT,
+        xaxis: { ...BASE_LAYOUT.xaxis, rangeslider: { visible: false } },
+      }, { displayModeBar: false });
+
+      // --- MACD pane ---
+      Plotly.react('chart-macd', [
+        { type: 'bar', x: ts, y: data.indicators.macd_hist, name: 'hist',
+          marker: { color: data.indicators.macd_hist.map(v => v >= 0 ? '#3fb950' : '#f85149') } },
+        lineTrace(ts, data.indicators.macd, 'MACD', '#58a6ff'),
+        lineTrace(ts, data.indicators.macd_signal, 'signal', '#f0b552'),
+      ], BASE_LAYOUT, { displayModeBar: false });
+
+      // --- RSI pane with threshold bands ---
+      const rsiTraces = [lineTrace(ts, data.indicators.rsi, 'RSI 14', '#58a6ff')];
+      const thresholds = data.thresholds;
+      Plotly.react('chart-rsi', rsiTraces, {
+        ...BASE_LAYOUT,
+        shapes: [
+          hlineShape(thresholds.rsi_entry_range[0], '#3fb950'),
+          hlineShape(thresholds.rsi_entry_range[1], '#3fb950'),
+          hlineShape(thresholds.rsi_upper_block, '#f85149'),
+        ],
+      }, { displayModeBar: false });
+
+      // --- ADX pane with adx_min threshold ---
+      Plotly.react('chart-adx', [
+        lineTrace(ts, data.indicators.adx, 'ADX 14', '#a370f0'),
+      ], {
+        ...BASE_LAYOUT,
+        shapes: [hlineShape(thresholds.adx_min, '#d29922')],
+      }, { displayModeBar: false });
+
+      // --- Volume pane with 2× sma line ---
+      Plotly.react('chart-volume', [
+        { type: 'bar', x: ts, y: volume, name: 'volume',
+          marker: { color: '#30363d' } },
+        lineTrace(
+          ts,
+          data.indicators.volume_sma_20.map(v =>
+            v === null ? null : v * thresholds.volume_surge_multiplier,
+          ),
+          `${thresholds.volume_surge_multiplier}× SMA 20`,
+          '#f0b552',
+        ),
+      ], BASE_LAYOUT, { displayModeBar: false });
+    } catch (e) {
+      errEl.innerText = String(e);
+    }
+  }
+
+  function lineTrace(x, y, name, color, width, dash) {
+    return {
+      type: 'scatter', mode: 'lines', x, y, name,
+      line: { color, width: width || 1.5, dash: dash || 'solid' },
+    };
+  }
+  function hlineShape(y, color) {
+    return {
+      type: 'line', xref: 'paper', x0: 0, x1: 1,
+      y0: y, y1: y,
+      line: { color, width: 1, dash: 'dot' },
+    };
+  }
+})();
+</script>
+
+{% endblock %}

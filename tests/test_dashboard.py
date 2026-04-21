@@ -669,6 +669,186 @@ def test_universe_mutations_audit(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------- #
+# Signals endpoints (D11 Slice 3)                                   #
+# ---------------------------------------------------------------- #
+
+def _seed_snapshot(store, **overrides):
+    """Helper for the signals-endpoint tests."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    base = dict(
+        ts=datetime(2026, 4, 21, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+        symbol="RELIANCE", score=6,
+        breakdown={"ema_stack": True}, action="entered",
+        reason="placed MARKET BUY", trace_id="abc123", trade_mode="paper",
+    )
+    base.update(overrides)
+    store.append_signal_snapshot(**base)
+
+
+def test_signals_page_renders(client: TestClient) -> None:
+    r = client.get("/signals")
+    assert r.status_code == 200
+    html = r.text
+    assert 'id="signals-host"' in html
+    assert "Hide skipped" in html
+    # Nav bar highlights Signals.
+    assert 'href="/signals"' in html
+
+
+def test_api_signals_recent_empty(client: TestClient) -> None:
+    r = client.get("/api/signals/recent")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 0
+    assert body["signals"] == []
+
+
+def test_api_signals_recent_returns_rows(client: TestClient) -> None:
+    _seed_snapshot(client.broker.store)  # type: ignore[attr-defined]
+    body = client.get("/api/signals/recent").json()
+    assert body["count"] == 1
+    assert body["signals"][0]["symbol"] == "RELIANCE"
+    assert body["signals"][0]["breakdown"] == {"ema_stack": True}
+
+
+def test_api_signals_recent_filter_by_min_score(client: TestClient) -> None:
+    store = client.broker.store  # type: ignore[attr-defined]
+    _seed_snapshot(store, symbol="LOW", score=2, action="skipped_score")
+    _seed_snapshot(store, symbol="HIGH", score=7)
+    body = client.get("/api/signals/recent?min_score=5").json()
+    symbols = {s["symbol"] for s in body["signals"]}
+    assert symbols == {"HIGH"}
+
+
+def test_api_signals_recent_filter_by_actions(client: TestClient) -> None:
+    store = client.broker.store  # type: ignore[attr-defined]
+    _seed_snapshot(store, symbol="A", action="entered")
+    _seed_snapshot(store, symbol="B", action="skipped_score")
+    body = client.get("/api/signals/recent?actions=entered").json()
+    assert {s["symbol"] for s in body["signals"]} == {"A"}
+
+
+def test_api_signals_symbol_scoped(client: TestClient) -> None:
+    store = client.broker.store  # type: ignore[attr-defined]
+    _seed_snapshot(store, symbol="RELIANCE")
+    _seed_snapshot(store, symbol="TCS")
+    body = client.get("/api/signals/symbol/RELIANCE").json()
+    assert body["symbol"] == "RELIANCE"
+    assert all(s["symbol"] == "RELIANCE" for s in body["signals"])
+
+
+def test_signals_table_partial_hide_skipped(client: TestClient) -> None:
+    store = client.broker.store  # type: ignore[attr-defined]
+    _seed_snapshot(store, symbol="KEPT", action="entered")
+    _seed_snapshot(store, symbol="HIDDEN", action="skipped_score")
+    html = client.get("/partials/signals_table?hide_skipped=true").text
+    assert "KEPT" in html
+    assert "HIDDEN" not in html
+
+
+def test_signals_table_partial_hide_watch_only(client: TestClient) -> None:
+    store = client.broker.store  # type: ignore[attr-defined]
+    _seed_snapshot(store, symbol="KEPT", action="entered")
+    _seed_snapshot(store, symbol="SHADOW", action="watch_only_logged")
+    html = client.get("/partials/signals_table?hide_watch_only=true").text
+    assert "KEPT" in html
+    assert "SHADOW" not in html
+
+
+def test_signals_table_empty_message(client: TestClient) -> None:
+    html = client.get("/partials/signals_table").text
+    assert "No signals match" in html
+
+
+# ---------------------------------------------------------------- #
+# Chart endpoint — indicator-parity with scoring engine             #
+# ---------------------------------------------------------------- #
+
+def test_chart_endpoint_returns_candles_and_indicators(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    """End-to-end: seed the broker's fetcher with known candles, hit
+    /api/charts/{symbol}, verify the indicator arrays match what
+    src.strategy.indicators produces on the same input. This is the
+    PROMPT's "do NOT recompute differently here" guarantee."""
+    import math
+
+    import pandas as pd
+
+    from data.market_data import df_to_candles
+    from strategy import indicators as ind
+    from tests.fixtures.synthetic import bullish_breakout_df
+
+    candles = df_to_candles(bullish_breakout_df())
+    # Swap in our candles for RELIANCE (fetcher is seeded with short
+    # single-bar series by default).
+    client.broker.fetcher._series["RELIANCE"] = candles  # type: ignore[attr-defined]
+
+    r = client.get("/api/charts/RELIANCE")
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["symbol"] == "RELIANCE"
+    assert body["candles"], "expected candles in response"
+    # Indicator series keys match what the UI needs.
+    for key in (
+        "ema_fast", "ema_mid", "ema_slow", "ema_trend",
+        "vwap", "macd", "macd_signal", "macd_hist",
+        "rsi", "adx", "bb_upper", "bb_middle", "bb_lower",
+        "supertrend_line", "supertrend_direction", "atr",
+        "volume_sma_20",
+    ):
+        assert key in body["indicators"], f"missing {key!r}"
+
+    # Parity: recompute RSI + MACD directly and assert last-bar match.
+    df = pd.DataFrame(
+        {
+            "open": [c.open for c in candles],
+            "high": [c.high for c in candles],
+            "low":  [c.low  for c in candles],
+            "close":[c.close for c in candles],
+            "volume":[c.volume for c in candles],
+        },
+        index=pd.DatetimeIndex([c.ts for c in candles]),
+    )
+    expected_rsi = float(ind.rsi(df["close"]).iloc[-1])
+    returned_rsi = body["indicators"]["rsi"][-1]
+    assert returned_rsi is not None
+    assert math.isclose(returned_rsi, expected_rsi, rel_tol=1e-9, abs_tol=1e-9)
+
+    expected_macd_hist = float(ind.macd(df["close"])["hist"].iloc[-1])
+    returned_macd_hist = body["indicators"]["macd_hist"][-1]
+    assert returned_macd_hist is not None
+    assert math.isclose(returned_macd_hist, expected_macd_hist,
+                        rel_tol=1e-9, abs_tol=1e-9)
+
+
+def test_chart_endpoint_404_on_unknown_symbol(client: TestClient) -> None:
+    # FakeCandleFetcher raises KeyError on unseeded symbols; the app
+    # catches that and surfaces a 404 so the UI can show a friendly
+    # error instead of a 500 stack trace.
+    r = client.get("/api/charts/NOT_A_SYMBOL")
+    assert r.status_code == 404
+    assert "NOT_A_SYMBOL" in r.json()["detail"]
+
+
+def test_chart_thresholds_carry_config_values(client: TestClient) -> None:
+    from data.market_data import df_to_candles
+    from tests.fixtures.synthetic import bullish_breakout_df
+
+    client.broker.fetcher._series["RELIANCE"] = df_to_candles(bullish_breakout_df())  # type: ignore[attr-defined]
+    body = client.get("/api/charts/RELIANCE").json()
+    th = body["thresholds"]
+    assert th["rsi_upper_block"] == 78.0
+    assert th["rsi_entry_range"] == [55.0, 75.0]
+    assert th["adx_min"] == 22.0
+    assert th["volume_surge_multiplier"] == 2.0
+    assert th["min_score"] == 6  # template default; dashboard fixture doesn't lower it
+
+
+# ---------------------------------------------------------------- #
 # Log tail                                                          #
 # ---------------------------------------------------------------- #
 

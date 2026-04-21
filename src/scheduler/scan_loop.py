@@ -39,6 +39,7 @@ from loguru import logger
 
 from brokers.base import OrderType, Position, Segment, Side
 from brokers.paper import PaperBroker
+from brokers.trade_mode import current_trade_mode
 from config.settings import Settings
 from data.holidays import HolidayCalendar
 from data.instruments import InstrumentMaster
@@ -61,6 +62,7 @@ from risk.stops import (
     update_trail_stop,
 )
 from scheduler.market_hours import (
+    IST,
     can_enter_new_trade,
     is_market_open,
     now_ist,
@@ -146,6 +148,10 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
     report = TickReport(trace_id=trace_id, ts=ts)
 
     store = ctx.broker.store
+
+    # D11 Slice 3 — prune signal_snapshots older than 7 days, at most
+    # once per calendar day (kv-guarded so we don't DELETE every tick).
+    _prune_signals_once_daily(store, ts, trace_id)
 
     # 1. Kill switch (emergency override).
     #    Kill is MORE than a skip: square off every open position with
@@ -274,6 +280,26 @@ def run_tick(ctx: ScanContext, ts: datetime | None = None) -> TickReport:
 # Internals                                                         #
 # ---------------------------------------------------------------- #
 
+def _prune_signals_once_daily(store, ts: datetime, trace_id: str) -> None:
+    """Guard: only run the DELETE once per IST calendar day. Uses a
+    kv flag (``last_signal_prune_date``) so repeat calls within the
+    same day are no-ops."""
+    today = ts.astimezone(IST).date().isoformat() if ts.tzinfo else ts.date().isoformat()
+    last = store.get_flag("last_signal_prune_date")
+    if last == today:
+        return
+    try:
+        deleted = store.prune_signal_snapshots_older_than(days=7)
+        store.set_flag("last_signal_prune_date", today, actor="scheduler")
+        if deleted:
+            logger.info(
+                "[{}] pruned {} signal_snapshots older than 7 days",
+                trace_id, deleted,
+            )
+    except Exception as exc:  # pragma: no cover — persistence failure
+        logger.error("[{}] signal prune failed: {}", trace_id, exc)
+
+
 def _candles_to_df(candles) -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -302,20 +328,48 @@ def _evaluate_symbol(
     ts: datetime,
     trace_id: str,
 ) -> SignalReport | None:
+    """Score a single symbol and place an entry if every gate allows.
+
+    D11 Slice 3: every decision branch writes a ``signal_snapshots``
+    row so the Signals tab + counterfactual queries can answer
+    "what did the engine decide, and why, at every tick?"
+    """
+    trade_mode_now = current_trade_mode(ctx.broker.store)
+
     if not candles or len(candles) < MIN_LOOKBACK_BARS:
+        _record_snapshot(
+            ctx, ts, symbol, 0, {}, "skipped_filter",
+            f"insufficient_candles ({len(candles) if candles else 0} bars)",
+            trace_id, trade_mode_now,
+        )
         return None
 
     # Don't double up on an existing long.
     if any(p.symbol == symbol and p.qty > 0 for p in ctx.broker.get_positions()):
+        _record_snapshot(
+            ctx, ts, symbol, 0, {}, "skipped_position_cap",
+            "already_long", trace_id, trade_mode_now,
+        )
         return None
 
     df = _candles_to_df(candles)
     score = score_symbol(df, ctx.settings.strategy)
+    breakdown = score.breakdown
+
     if score.blocked:
         logger.debug("[{}] {} blocked: {}", trace_id, symbol, score.block_reason)
+        _record_snapshot(
+            ctx, ts, symbol, score.total, breakdown, "skipped_filter",
+            score.block_reason or "hard_block", trace_id, trade_mode_now,
+        )
         return None
     if score.total < ctx.settings.strategy.min_score:
         logger.debug("[{}] {} score {} < {}", trace_id, symbol, score.total, ctx.settings.strategy.min_score)
+        _record_snapshot(
+            ctx, ts, symbol, score.total, breakdown, "skipped_score",
+            f"score {score.total}/8 < min_score {ctx.settings.strategy.min_score}",
+            trace_id, trade_mode_now,
+        )
         return None
 
     # Position-count gate — symbol-specific because it depends on the
@@ -329,12 +383,20 @@ def _evaluate_symbol(
     )
     if not gate.allow_new_entries:
         logger.debug("[{}] {} position cap: {}", trace_id, symbol, gate.reason)
+        _record_snapshot(
+            ctx, ts, symbol, score.total, breakdown, "skipped_position_cap",
+            gate.reason, trace_id, trade_mode_now,
+        )
         return None
 
     # ATR → stop + take-profit.
     atr_series = ind.atr(df["high"], df["low"], df["close"])
     atr = float(atr_series.iloc[-1])
     if atr <= 0:
+        _record_snapshot(
+            ctx, ts, symbol, score.total, breakdown, "skipped_filter",
+            "atr_non_positive", trace_id, trade_mode_now,
+        )
         return None
 
     entry = float(df["close"].iloc[-1])
@@ -364,12 +426,14 @@ def _evaluate_symbol(
     )
     if size.qty == 0:
         logger.debug("[{}] {} sized to zero: {}", trace_id, symbol, size.note)
+        _record_snapshot(
+            ctx, ts, symbol, score.total, breakdown, "skipped_risk",
+            size.note or "sized_to_zero", trace_id, trade_mode_now,
+        )
         return None
 
     # Per-symbol watch-only override (D11 Slice 2): score is still
-    # computed (so Slice 3 signal-snapshot tables can record it) but
-    # no order flows. Useful for "I want to shadow INFY for a week
-    # before letting the bot trade it".
+    # computed + snapshotted, but no order flows.
     if (
         ctx.universe_registry is not None
         and ctx.universe_registry.has_watch_only_override(symbol)
@@ -378,17 +442,29 @@ def _evaluate_symbol(
             "[{}] {} score={}/8 watch_only_override — signal logged, no order",
             trace_id, symbol, score.total,
         )
+        _record_snapshot(
+            ctx, ts, symbol, score.total, breakdown, "watch_only_logged",
+            "per_symbol_override", trace_id, trade_mode_now,
+        )
         return None
 
     order = ctx.broker.place_order(
         symbol, size.qty, Side.BUY, OrderType.MARKET,
         intent="entry", ts=ts,
     )
-    # Only stash stops if the order was actually accepted — a trade-mode
-    # rejection returns a non-PENDING order the broker never queues.
-    if order.status == "PENDING":
-        ctx.pending_stops[order.id] = (stop, tp)
+    if order.status != "PENDING":
+        # Broker rejected — typically global trade_mode=watch_only.
+        _record_snapshot(
+            ctx, ts, symbol, score.total, breakdown, "watch_only_logged",
+            f"broker_rejection: {order.status}", trace_id, trade_mode_now,
+        )
+        return None
 
+    ctx.pending_stops[order.id] = (stop, tp)
+    _record_snapshot(
+        ctx, ts, symbol, score.total, breakdown, "entered",
+        f"placed MARKET BUY qty={size.qty}", trace_id, trade_mode_now,
+    )
     logger.info(
         "[{}] SIGNAL {} qty={} entry={:.2f} stop={:.2f} tp={:.2f} score={}/8",
         trace_id, symbol, size.qty, entry, stop, tp, score.total,
@@ -397,6 +473,32 @@ def _evaluate_symbol(
         symbol=symbol, score=score.total, qty=size.qty,
         entry=entry, stop=stop, take_profit=tp, order_id=order.id,
     )
+
+
+def _record_snapshot(
+    ctx: ScanContext,
+    ts: datetime,
+    symbol: str,
+    score: int,
+    breakdown: dict[str, bool],
+    action: str,
+    reason: str | None,
+    trace_id: str,
+    trade_mode: str,
+) -> None:
+    """Thin wrapper around ``StateStore.append_signal_snapshot`` —
+    exists so every exit from ``_evaluate_symbol`` is a one-liner."""
+    try:
+        ctx.broker.store.append_signal_snapshot(
+            ts=ts, symbol=symbol, score=score, breakdown=breakdown,
+            action=action, reason=reason, trace_id=trace_id,
+            trade_mode=trade_mode,
+        )
+    except Exception as exc:  # pragma: no cover — persistence failure
+        logger.error(
+            "[{}] failed to write signal snapshot for {}: {}",
+            trace_id, symbol, exc,
+        )
 
 
 def _manage_positions(

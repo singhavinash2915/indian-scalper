@@ -1,0 +1,69 @@
+{# Signals partial — re-rendered every 5s by HTMX on the /signals
+   page. Rows are clickable → open the chart drawer for that symbol. #}
+{% if rows %}
+<div style="color: var(--muted); font-size: 12px; margin-bottom: 8px;">
+  {{ rows | length }} decision(s)
+  {% if min_score > 0 %} · score ≥ {{ min_score }}{% endif %}
+  {% if hide_skipped %} · hiding skipped{% endif %}
+  {% if hide_watch_only %} · hiding watch-only-logged{% endif %}
+  {% if segment %} · segment={{ segment }}{% endif %}
+</div>
+<table>
+  <thead>
+    <tr>
+      <th>Time (IST)</th>
+      <th>Symbol</th>
+      <th>Score</th>
+      <th>Action</th>
+      <th>Reason</th>
+      <th>Mode</th>
+      <th>Trace</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    {% set row_class =
+        'row-entered'      if r.action == 'entered'
+        else 'row-watch-logged' if r.action == 'watch_only_logged'
+        else '' %}
+    {% set score_class =
+        'score-strong' if r.score >= 6
+        else 'score-mid'    if r.score >= 4
+        else 'score-low' %}
+    {% set action_class = {
+        'entered': 'a-entered',
+        'watch_only_logged': 'a-watch',
+        'skipped_score': 'a-sk-score',
+        'skipped_filter': 'a-sk-filter',
+        'skipped_risk': 'a-sk-risk',
+        'skipped_position_cap': 'a-sk-poscap',
+        'skipped_disabled': 'a-sk-disabled',
+    }.get(r.action, 'a-sk-filter') %}
+    <tr class="signal-row {{ row_class }}"
+        data-symbol="{{ r.symbol }}"
+        data-trace="{{ r.trace_id or '' }}">
+      <td>{{ r.ts.replace('T', ' ')[:19] }}</td>
+      <td><b>{{ r.symbol }}</b></td>
+      <td>
+        <span class="score-chip {{ score_class }}">{{ r.score }}/8</span>
+      </td>
+      <td>
+        <span class="action-pill {{ action_class }}">{{ r.action }}</span>
+      </td>
+      <td style="color: var(--muted); font-size: 12px;">
+        {{ r.reason or '—' }}
+      </td>
+      <td style="color: var(--muted); font-size: 11px;">{{ r.trade_mode }}</td>
+      <td style="font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--muted);">
+        {{ r.trace_id or '—' }}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">
+  No signals match the current filters. Run the scan loop
+  (Resume scheduler) or widen the filters.
+</div>
+{% endif %}

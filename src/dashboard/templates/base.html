@@ -198,6 +198,45 @@
   details.audit-drawer[open] > summary { margin-bottom: 10px; }
   .audit-drawer td.small, .audit-drawer th { font-size: 11px; }
   .audit-drawer td { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+
+  /* ---- Signals (D11 Slice 3) ---- */
+  .score-chip {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-weight: 700; font-size: 11px; letter-spacing: 0.08em;
+  }
+  .score-strong { background: #0f2d18; color: #7de28a; }
+  .score-mid    { background: #3a2e10; color: #f0b552; }
+  .score-low    { background: #1c232d; color: #8b949e; }
+  tr.row-entered      td { background: rgba(63, 185, 80, 0.05); }
+  tr.row-watch-logged td { background: rgba(88, 166, 255, 0.05); }
+  .action-pill {
+    display: inline-block; padding: 2px 7px; border-radius: 4px;
+    font-size: 10px; letter-spacing: 0.06em; font-weight: 600;
+  }
+  .a-entered      { background: #0f2d18; color: #7de28a; }
+  .a-watch        { background: #0f2440; color: #79c0ff; }
+  .a-sk-score     { background: #2a2a2a; color: #8b949e; }
+  .a-sk-filter    { background: #2a2a2a; color: #a370f0; }
+  .a-sk-risk      { background: #3a2e10; color: #f0b552; }
+  .a-sk-poscap    { background: #3a2e10; color: #ff9d6b; }
+  .a-sk-disabled  { background: #2a2a2a; color: #6e7681; }
+  tr.signal-row:hover { cursor: pointer; background: rgba(88, 166, 255, 0.06); }
+
+  /* ---- Chart drawer (full-width modal) ---- */
+  .chart-drawer {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.78);
+    display: none; z-index: 60; align-items: stretch; justify-content: center;
+    padding: 30px;
+  }
+  .chart-drawer.open { display: flex; }
+  .chart-drawer .chart-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 18px; flex: 1 1 auto; max-width: 1400px; overflow-y: auto;
+  }
+  .chart-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .chart-head h3 { margin: 0; font-size: 15px; }
+  .chart-head .spacer { flex: 1; }
+  .chart-box label.auto-refresh { color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -213,8 +252,8 @@
 <nav class="tabs">
   <a href="/" class="{{ 'active' if current_tab == 'dashboard' else '' }}">Dashboard</a>
   <a href="/universe" class="{{ 'active' if current_tab == 'universe' else '' }}">Universe</a>
-  <a class="disabled" title="Slice 3">Signals</a>
-  <a class="disabled" title="Slice 3+">Logs</a>
+  <a href="/signals" class="{{ 'active' if current_tab == 'signals' else '' }}">Signals</a>
+  <a class="disabled" title="logs partial lives on Dashboard for now">Logs</a>
 </nav>
 
 <main>
