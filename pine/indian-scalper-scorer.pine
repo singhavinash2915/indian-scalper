@@ -103,8 +103,7 @@ f_bb_breakout  = bb_expansion_ratio >= 1.5 and bb_bw > bb_bw[5] * 1.1 and close 
 f_supertrend   = st_dir == -1 and close > st_line   // Pine returns -1 for bullish
 
 // ───── Score + hard block ────────────────────────────────────────────────────
-score =
-     (f_ema_stack    ? 1 : 0) +
+score = (f_ema_stack    ? 1 : 0) +
      (f_vwap_cross   ? 1 : 0) +
      (f_macd_cross   ? 1 : 0) +
      (f_rsi_entry    ? 1 : 0) +
@@ -117,11 +116,10 @@ blocked = rsi > rsi_hard_block
 effective_score = blocked ? 0 : score
 
 // ───── Plots ─────────────────────────────────────────────────────────────────
-score_col =
-     blocked        ? color.new(color.fuchsia, 0) :
+score_col = blocked ? color.new(color.fuchsia, 0) :
      effective_score >= 6 ? color.new(color.green, 0) :
      effective_score >= 4 ? color.new(color.orange, 0) :
-                            color.new(color.gray, 0)
+     color.new(color.gray, 0)
 
 plot(effective_score, title="Score", style=plot.style_stepline, linewidth=3,
      color=score_col)

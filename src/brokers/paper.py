@@ -38,7 +38,7 @@ from brokers.trade_mode import (
 )
 from config.settings import Settings
 from data.instruments import InstrumentMaster
-from data.market_data import CandleFetcher, YFinanceFetcher
+from data.market_data import CandleFetcher, UpstoxFetcher, YFinanceFetcher
 from execution.order_manager import OrderManager
 from execution.state import StateStore
 
@@ -73,10 +73,12 @@ class PaperBroker(BrokerBase):
             starting_cash=settings.capital.starting_inr,
             slippage_pct=self.slippage_pct,
         )
-        self.fetcher: CandleFetcher = candle_fetcher or _default_fetcher()
         self.instruments = instruments or InstrumentMaster(
             db_path=self._db_path,
             cache_dir=self._db_path.parent / "instruments",
+        )
+        self.fetcher: CandleFetcher = candle_fetcher or _default_fetcher(
+            settings, instruments=self.instruments,
         )
 
         # Running LTP cache — updated by settle() + mark_to_market().
@@ -253,9 +255,33 @@ class PaperBroker(BrokerBase):
         return self.store.get_flag("kill_switch", "armed") == "tripped"
 
 
-def _default_fetcher() -> CandleFetcher:
-    """Deferred construction so importing PaperBroker doesn't force a
-    yfinance install on systems that only ever run tests."""
+def _default_fetcher(
+    settings: Settings, instruments: InstrumentMaster | None = None,
+) -> CandleFetcher:
+    """Pick the candle backend based on ``data.source`` in config.
+
+    - ``upstox`` (default when UPSTOX_ACCESS_TOKEN is set) → real-time NSE
+      via Upstox REST. Requires instrument master for symbol→ISIN lookup.
+    - ``yfinance`` → delayed Yahoo feed. Default fallback.
+
+    Deferred construction so importing PaperBroker doesn't force a
+    yfinance or httpx import on test-only systems.
+    """
+    import os
+    data_cfg = settings.raw.get("data", {}) or {}
+    source = (data_cfg.get("source") or "").strip().lower()
+
+    # ``auto`` (default): Upstox if token present, else yfinance.
+    if not source or source == "auto":
+        source = "upstox" if os.environ.get("UPSTOX_ACCESS_TOKEN") else "yfinance"
+
+    if source == "upstox":
+        try:
+            fetcher = UpstoxFetcher(instruments=instruments)
+            logger.info("data.source=upstox — real-time NSE feed")
+            return fetcher
+        except RuntimeError as exc:
+            logger.warning("UpstoxFetcher unavailable ({}); falling back to yfinance", exc)
     return YFinanceFetcher()
 
 

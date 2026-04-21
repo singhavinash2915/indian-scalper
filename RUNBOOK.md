@@ -406,6 +406,48 @@ KPIs, and the most recent `entered` + `watch_only_logged` signals.
 The universe edit + chart drawer live on `/` (desktop) — anything
 you'd normally do on the phone is on `/m/`.
 
+### Upstox real-time data feed
+
+Swap the default yfinance (~15 min delay) for real-time NSE candles via
+Upstox REST. Works in both paper and live modes — paper keeps using
+simulated orders, but the scorer sees live prices.
+
+**One-time setup** (~5 min):
+
+1. Create an app at https://account.upstox.com/developer/apps
+   - Redirect URI: `http://127.0.0.1:8080/upstox/callback` (exact match)
+2. Copy **API Key** + **API Secret** into `.env`:
+   ```
+   UPSTOX_API_KEY=...
+   UPSTOX_API_SECRET=...
+   UPSTOX_ACCESS_TOKEN=   # filled by the helper below
+   ```
+3. Set `data.source: auto` (default) or explicitly `upstox` in `config.yaml`.
+
+**Every morning before 09:15 IST** — tokens expire daily at 03:30 IST:
+
+```bash
+uv run scalper-upstox-auth
+# → opens browser → you log in → callback captured → .env updated
+```
+
+The helper listens on `127.0.0.1:8080/upstox/callback`, captures the
+OAuth code automatically, exchanges it for an access token, and
+rewrites the `UPSTOX_ACCESS_TOKEN` line in `.env` in place. Other
+entries (API key, secret, comments) are preserved.
+
+**Verify the live feed:**
+
+```bash
+uv run scalper-live-ltp RELIANCE TCS INFY --compare-yfinance
+# → prints Upstox (live) vs yfinance (delayed) side-by-side.
+#   During market hours you'll see a few paise gap — Upstox matches NSE.
+```
+
+**Fallback behaviour:** if `UPSTOX_ACCESS_TOKEN` is missing or expired,
+the bot logs a warning and falls back to yfinance automatically — the
+scheduler never crashes on a bad token.
+
 ### TradingView cross-check (Pine Script)
 
 Paste `pine/indian-scalper-scorer.pine` into TradingView's Pine editor

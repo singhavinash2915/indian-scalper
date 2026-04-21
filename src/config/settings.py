@@ -84,6 +84,13 @@ paper:
   slippage_pct: 0.05
   fill_on: next_candle_open      # next_candle_open | current_close
 
+data:
+  # Candle feed for paper/live scoring.
+  #   upstox   — real-time NSE via Upstox REST (needs UPSTOX_ACCESS_TOKEN)
+  #   yfinance — free delayed feed (~15 min NSE lag)
+  #   auto     — upstox if UPSTOX_ACCESS_TOKEN set, else yfinance (default)
+  source: auto
+
 upstox:
   api_key_env: UPSTOX_API_KEY
   api_secret_env: UPSTOX_API_SECRET
