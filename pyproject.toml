@@ -74,6 +74,7 @@ include = [
     "src/replay.py",
     "src/tick_once.py",
     "src/auto_resume.py",
+    "src/network.py",
 ]
 
 [tool.pytest.ini_options]

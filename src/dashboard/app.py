@@ -289,6 +289,44 @@ def create_app(
             request, "partials/mode_pill.html", _mode_status_context(state),
         )
 
+    # ---------------- Mobile (D12 Session 2) ----------------
+    #
+    # /m/ prefix is a completely separate template tree tuned for
+    # 375 px phone screens. Reuses the same _control_state_context /
+    # _kpis_context helpers so there's one source of truth for
+    # state; two layouts, one model.
+
+    @app.get("/m", response_class=HTMLResponse)
+    @app.get("/m/", response_class=HTMLResponse)
+    def mobile_home(request: Request) -> HTMLResponse:
+        ctx = {
+            **_kpis_context(state),
+            **_control_state_context(state),
+            **_mode_status_context(state),
+            "banner": "PAPER TRADING — NOT FINANCIAL ADVICE",
+        }
+        return templates.TemplateResponse(request, "mobile.html", ctx)
+
+    @app.get("/m/partials/overview", response_class=HTMLResponse)
+    def mobile_overview(request: Request) -> HTMLResponse:
+        ctx = {
+            **_kpis_context(state),
+            **_control_state_context(state),
+            **_mode_status_context(state),
+        }
+        return templates.TemplateResponse(
+            request, "mobile_overview.html", ctx,
+        )
+
+    @app.get("/m/partials/signals", response_class=HTMLResponse)
+    def mobile_signals(request: Request, limit: int = 20) -> HTMLResponse:
+        rows = state.broker.store.load_recent_signals(
+            limit=limit, actions=["entered", "watch_only_logged"],
+        )
+        return templates.TemplateResponse(
+            request, "mobile_signals.html", {"rows": rows},
+        )
+
     # ---------------- Controls (D11 Slice 1) ----------------
 
     @app.get("/api/control/state")

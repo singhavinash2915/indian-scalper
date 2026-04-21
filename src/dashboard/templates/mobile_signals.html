@@ -1,0 +1,23 @@
+{# Mobile signals list — filtered to actually-actionable events
+   (entered + watch_only_logged), not the 97× skipped_score per
+   tick that would fill the phone screen. Polled every 10s. #}
+{% if rows %}
+{% for r in rows %}
+  {% set score_class =
+      'score-strong' if r.score >= 6
+      else 'score-mid' if r.score >= 4
+      else 'score-low' %}
+  <div class="sig-row">
+    <span class="score-chip {{ score_class }}">{{ r.score }}/8</span>
+    <div>
+      <div class="sym">{{ r.symbol }}</div>
+      <div class="reason">{{ r.action }} · {{ r.reason or '—' }}</div>
+    </div>
+    <div style="font-size: 10px; color: var(--muted); text-align: right;">
+      {{ r.ts.replace('T', ' ')[11:16] }}
+    </div>
+  </div>
+{% endfor %}
+{% else %}
+<div class="empty">No signals yet. Scheduler may be stopped — check Controls.</div>
+{% endif %}

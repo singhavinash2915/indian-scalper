@@ -1,0 +1,47 @@
+{# Mobile-only overview partial: status + mode pills + top-level KPIs.
+   Polled every 3s by mobile.html. #}
+<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
+  {% set status_class =
+      'status-running' if status == 'RUNNING'
+      else 'status-paused' if status == 'PAUSED'
+      else 'status-killed' if status == 'KILLED'
+      else 'status-stopped' %}
+  {% set mode_class =
+      'mode-watch' if mode == 'watch_only'
+      else 'mode-paper' if mode == 'paper'
+      else 'mode-live' %}
+  <span class="pill {{ status_class }}">{{ status }}</span>
+  <span class="pill {{ mode_class }}">
+    {% if mode == 'watch_only' %}WATCH{% elif mode == 'paper' %}PAPER{% else %}LIVE{% endif %}
+  </span>
+  {% if auto_resume_enabled %}
+    <span class="pill" style="background: #101c2a; color: #79c0ff;">AUTO-RESUME</span>
+  {% endif %}
+</div>
+
+<div class="kpi-row">
+  <div class="kpi-tile">
+    <div class="label">Equity</div>
+    <div class="value">₹{{ "{:,.0f}".format(equity) }}</div>
+    <div class="sub {{ 'good' if total_pnl >= 0 else 'bad' }}">
+      {{ "{:+.2f}".format(total_pnl_pct) }}% vs start
+    </div>
+  </div>
+  <div class="kpi-tile">
+    <div class="label">Day P&amp;L</div>
+    <div class="value {{ 'good' if day_pnl >= 0 else 'bad' }}">
+      {{ "{:+,.0f}".format(day_pnl) }}
+    </div>
+    <div class="sub">{{ "{:+.2f}".format(day_pnl_pct) }}% today</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="label">Positions</div>
+    <div class="value">{{ eq_open + fno_open }}/{{ eq_max + fno_max }}</div>
+    <div class="sub">{{ eq_open }} eq · {{ fno_open }} F&amp;O</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="label">Cash</div>
+    <div class="value">₹{{ "{:,.0f}".format(cash) }}</div>
+    <div class="sub">used ₹{{ "{:,.0f}".format(used) }}</div>
+  </div>
+</div>

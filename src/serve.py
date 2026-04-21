@@ -132,12 +132,23 @@ def main() -> None:
     )
 
     dashboard_cfg = settings.raw.get("dashboard", {})
-    # DASHBOARD_HOST env wins over config.yaml — Docker defaults to
-    # 0.0.0.0 so port mapping works; bare-metal installs stay on
-    # 127.0.0.1 from config.
-    host = os.environ.get("DASHBOARD_HOST") or dashboard_cfg.get("host", "127.0.0.1")
+    # Bind decision precedence: DASHBOARD_HOST env (explicit) wins
+    # outright; SCALPER_TAILSCALE_ONLY=yes binds to the detected
+    # Tailscale IP after verifying tailscale is up; otherwise fall
+    # back to config.yaml's host (default 127.0.0.1). See
+    # src/network.py for full logic + safety guards.
+    from network import resolve_bind_host
+
+    decision = resolve_bind_host(
+        default=dashboard_cfg.get("host", "127.0.0.1"),
+    )
+    if decision.host == "":
+        logger.error("refusing to start: {}", decision.reason)
+        return
+    host = decision.host
     port = int(os.environ.get("DASHBOARD_PORT") or dashboard_cfg.get("port", 8080))
     log_level = settings.raw.get("logging", {}).get("level", "info").lower()
+    logger.info("uvicorn bind: {}:{} ({})", host, port, decision.reason)
 
     try:
         uvicorn.run(app, host=host, port=port, log_level=log_level)

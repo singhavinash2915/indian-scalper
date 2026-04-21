@@ -421,6 +421,67 @@ def test_rearm_clears_kill_but_does_not_resume(client: TestClient) -> None:
     assert client.broker.is_kill_switch_on() is False  # type: ignore[attr-defined]
 
 
+# ---------------------------------------------------------------- #
+# Mobile routes (D12 Session 2)                                     #
+# ---------------------------------------------------------------- #
+
+def test_mobile_home_renders(client: TestClient) -> None:
+    r = client.get("/m/")
+    assert r.status_code == 200
+    html = r.text
+    # Banner + overview poll target + controls + kill sheet.
+    assert "Scalper" in html
+    assert 'id="overview"' in html
+    assert 'data-action="kill"' in html
+    assert 'id="kill-sheet"' in html
+    # Viewport meta for phone scaling.
+    assert 'width=device-width' in html
+
+
+def test_mobile_home_redirects_without_trailing_slash(client: TestClient) -> None:
+    """Both /m and /m/ should resolve."""
+    r = client.get("/m")
+    assert r.status_code == 200
+
+
+def test_mobile_overview_partial(client: TestClient) -> None:
+    html = client.get("/m/partials/overview").text
+    # KPI labels + status pill
+    assert "Equity" in html
+    assert "Day P&" in html
+    assert "STOPPED" in html or "PAUSED" in html or "RUNNING" in html or "KILLED" in html
+    # Mode pill (paper per client fixture)
+    assert "PAPER" in html
+
+
+def test_mobile_signals_partial_empty(client: TestClient) -> None:
+    html = client.get("/m/partials/signals").text
+    assert "No signals yet" in html
+
+
+def test_mobile_signals_partial_shows_entered(client: TestClient) -> None:
+    """Mobile list is filtered to entered + watch_only_logged — not
+    the ~100× skipped_score spam per tick."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    store = client.broker.store  # type: ignore[attr-defined]
+    t0 = datetime(2026, 4, 22, 10, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    store.append_signal_snapshot(
+        ts=t0, symbol="KEEP", score=7, breakdown={},
+        action="entered", reason="placed MARKET BUY", trace_id="t1",
+        trade_mode="paper",
+    )
+    store.append_signal_snapshot(
+        ts=t0, symbol="HIDE", score=2, breakdown={},
+        action="skipped_score", reason=None, trace_id="t2",
+        trade_mode="paper",
+    )
+    html = client.get("/m/partials/signals").text
+    assert "KEEP" in html
+    assert "HIDE" not in html  # skipped_score is hidden
+
+
 def test_auto_resume_toggle_round_trip(client: TestClient) -> None:
     """The auto-resume toggle persists to control_flags and surfaces
     in /api/control/state."""

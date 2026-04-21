@@ -354,4 +354,56 @@ Disable without touching launchd: uncheck the dashboard toggle. The
 agent still fires but the script exits immediately when
 `auto_resume_enabled=0`.
 
+### Mobile access via Tailscale
+
+Reach the dashboard from your phone without public exposure. Five-minute
+setup; free for personal use.
+
+```bash
+# 1. Install Tailscale on the Mac running the bot:
+brew install tailscale
+sudo tailscale up
+# Follow the login URL in the browser that opens.
+
+# 2. Install Tailscale on your iPhone/Android from the App Store,
+#    log in with the same account → phone joins the tailnet.
+
+# 3. Find the Mac's tailnet hostname or IPv4:
+tailscale ip -4
+# → something like 100.101.102.103
+
+# 4. Tell scalper to bind to the tailnet interface:
+export SCALPER_TAILSCALE_ONLY=yes
+uv run scalper
+
+# 5. On your phone, open Safari/Chrome:
+#    http://100.101.102.103:8080/m/
+#    (bookmark the /m/ mobile route; desktop / is also reachable)
+```
+
+Or bake it into the launchd plist (`deploy/macos/com.indianscalper.service.plist`):
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+    <key>SCALPER_TAILSCALE_ONLY</key><string>yes</string>
+    <!-- existing PATH / TZ here too -->
+</dict>
+```
+
+Safety guarantees:
+- Bot refuses to start if `SCALPER_TAILSCALE_ONLY=yes` but Tailscale
+  isn't up. No accidental public binding.
+- Tailscale ACLs are identity-based (your tailnet devices only); no
+  password/API key to rotate.
+- To fall back to loopback, unset the env var and restart.
+
+### Mobile UI at `/m/`
+
+Dedicated route at `http://<tailnet-ip>:8080/m/`. Full controls
+(Pause, Resume, KILL with 3-sec hold, Re-arm, flip to watch_only),
+KPIs, and the most recent `entered` + `watch_only_logged` signals.
+The universe edit + chart drawer live on `/` (desktop) — anything
+you'd normally do on the phone is on `/m/`.
+
 ### systemd / Docker — see README §Deployment

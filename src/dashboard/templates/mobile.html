@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0b0f15">
+<title>Scalper — mobile</title>
+
+<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+
+<style>
+  :root {
+    --bg: #0b0f15; --panel: #121821; --panel-2: #1a222e;
+    --fg: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --good: #3fb950; --bad: #f85149; --warn: #d29922;
+    --border: #30363d;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    font-size: 15px; line-height: 1.4;
+    padding-bottom: 120px; /* breathing room above home indicator */
+  }
+
+  .banner {
+    background: repeating-linear-gradient(
+      45deg, #5a2020, #5a2020 12px, #6a2424 12px, #6a2424 24px);
+    color: #ffdada; font-weight: 700; font-size: 11px;
+    letter-spacing: 0.08em; text-align: center; padding: 6px 10px;
+  }
+  header {
+    padding: 14px 16px 10px; border-bottom: 1px solid var(--border);
+    background: var(--panel); display: flex; align-items: center; gap: 10px;
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header .spacer { flex: 1; }
+  header a.desktop-link {
+    color: var(--muted); font-size: 11px; text-decoration: none;
+  }
+  main { padding: 12px; }
+
+  /* Pills */
+  .pill {
+    display: inline-block; padding: 4px 11px; border-radius: 999px;
+    font-weight: 700; font-size: 11px; letter-spacing: 0.1em;
+    border: 1px solid var(--border);
+  }
+  .mode-watch { background: #0f2440; color: #79c0ff; border-color: #1f4d80; }
+  .mode-paper { background: #3a2e10; color: #f0b552; border-color: #6b5320; }
+  .mode-live  { background: #4a1414; color: #ffa7a7; border-color: #8b2222; }
+  .status-running { background: #0f2d18; color: #7de28a; border-color: #1f5a34; }
+  .status-paused  { background: #3a2e10; color: #f0b552; border-color: #6b5320; }
+  .status-stopped { background: #1c232d; color: #9099a6; }
+  .status-killed  { background: #4a1414; color: #ffa7a7; border-color: #8b2222; }
+
+  /* Panels */
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px; margin-bottom: 12px;
+  }
+  .card h2 {
+    margin: 0 0 8px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--muted); font-weight: 600;
+  }
+  .kpi-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  }
+  .kpi-tile {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px;
+  }
+  .kpi-tile .label {
+    color: var(--muted); font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .kpi-tile .value {
+    font-size: 18px; font-weight: 600; margin-top: 3px;
+  }
+  .kpi-tile .sub { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+
+  /* Big touch targets */
+  .btn-row { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+  .btn {
+    background: var(--panel-2); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; font-size: 14px; font-weight: 600;
+    cursor: pointer; min-height: 48px;
+  }
+  .btn:disabled { opacity: 0.35; }
+  .btn.danger {
+    border-color: var(--bad); color: var(--bad); background: #2a1010;
+  }
+  .btn.full { grid-column: 1 / span 2; }
+
+  /* Signals list */
+  .sig-row {
+    display: grid; grid-template-columns: auto 1fr auto; gap: 8px;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+    align-items: center;
+  }
+  .sig-row:last-child { border-bottom: none; }
+  .score-chip {
+    padding: 2px 8px; border-radius: 999px;
+    font-weight: 700; font-size: 11px;
+  }
+  .score-strong { background: #0f2d18; color: #7de28a; }
+  .score-mid    { background: #3a2e10; color: #f0b552; }
+  .score-low    { background: #1c232d; color: #8b949e; }
+  .sym { font-weight: 600; font-size: 14px; }
+  .reason { color: var(--muted); font-size: 11px; }
+
+  /* Kill modal — fullscreen on mobile */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+    display: none; align-items: flex-end; z-index: 50;
+  }
+  .modal-bg.open { display: flex; }
+  .modal-sheet {
+    background: var(--panel); width: 100%; padding: 20px 16px 32px;
+    border-top-left-radius: 18px; border-top-right-radius: 18px;
+  }
+  .modal-sheet h3 { margin: 0 0 10px; color: var(--bad); }
+  .hold-bar {
+    height: 6px; background: #2a2a2a; border-radius: 3px;
+    margin: 14px 0; overflow: hidden;
+  }
+  .hold-fill {
+    height: 100%; width: 0%; background: var(--bad);
+    transition: width 100ms linear;
+  }
+  .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+</style>
+</head>
+<body>
+
+<div class="banner">{{ banner }}</div>
+
+<header>
+  <h1>Scalper</h1>
+  <div class="spacer"></div>
+  <a href="/" class="desktop-link">desktop ↗</a>
+</header>
+
+<main>
+  <!-- Status + mode pills — always fresh via polling -->
+  <div class="card" id="overview"
+       hx-get="/m/partials/overview"
+       hx-trigger="load, every 3s, controls-changed from:body, mode-changed from:body"
+       hx-swap="innerHTML">
+    <div class="empty">Loading…</div>
+  </div>
+
+  <!-- Controls -->
+  <div class="card">
+    <h2>Controls</h2>
+    <div class="btn-row" id="mobile-ctrls">
+      <button class="btn" data-action="resume">Resume</button>
+      <button class="btn" data-action="pause">Pause</button>
+      <button class="btn danger full" data-action="kill">KILL (3s hold)</button>
+      <button class="btn" data-action="rearm">Re-arm</button>
+      <button class="btn" data-action="mode-watch">→ watch_only</button>
+    </div>
+  </div>
+
+  <!-- Signals: entered + watch-only-logged only (not the 100× skipped_score spam) -->
+  <div class="card">
+    <h2>Recent signals</h2>
+    <div id="mobile-signals"
+         hx-get="/m/partials/signals"
+         hx-trigger="load, every 10s, controls-changed from:body"
+         hx-swap="innerHTML">
+      <div class="empty">Loading…</div>
+    </div>
+  </div>
+</main>
+
+<!-- Kill confirm sheet -->
+<div class="modal-bg" id="kill-sheet">
+  <div class="modal-sheet">
+    <h3>Kill switch</h3>
+    <div>Squares off every open position at market + stops the scheduler.
+      Hold Confirm for 3 s.</div>
+    <div class="hold-bar"><div class="hold-fill" id="hold-fill"></div></div>
+    <div id="kill-err" style="color: var(--bad); font-size: 12px; min-height: 16px;"></div>
+    <div class="btn-row">
+      <button class="btn" id="kill-cancel">Cancel</button>
+      <button class="btn danger" id="kill-confirm" disabled>Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  async function post(path, body) {
+    try {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: body ? {'Content-Type': 'application/json'} : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(data.detail || 'failed'); return null; }
+      document.body.dispatchEvent(new CustomEvent('controls-changed'));
+      return data;
+    } catch (e) { alert(String(e)); return null; }
+  }
+
+  // Kill flow (same 3-sec hold as desktop).
+  const sheet = document.getElementById('kill-sheet');
+  const holdFill = document.getElementById('hold-fill');
+  const killErr = document.getElementById('kill-err');
+  const killConfirm = document.getElementById('kill-confirm');
+  const killCancel = document.getElementById('kill-cancel');
+  let killToken = null, holdHandle = null;
+
+  function closeKill() {
+    sheet.classList.remove('open');
+    killToken = null;
+    holdFill.style.width = '0%';
+    killConfirm.disabled = true;
+    if (holdHandle) { clearTimeout(holdHandle); holdHandle = null; }
+  }
+  async function startKill() {
+    killErr.innerText = '';
+    holdFill.style.width = '0%';
+    killConfirm.disabled = true;
+    const prep = await fetch('/api/control/kill/prepare', {method: 'POST'})
+      .then(r => r.json());
+    if (!prep.token) { killErr.innerText = prep.detail || 'prepare failed'; sheet.classList.add('open'); return; }
+    killToken = prep.token;
+    sheet.classList.add('open');
+
+    const start = Date.now();
+    (function tick() {
+      const elapsed = Date.now() - start;
+      const pct = Math.min(100, (elapsed / 3000) * 100);
+      holdFill.style.width = pct + '%';
+      if (elapsed >= 3000) killConfirm.disabled = false;
+      else holdHandle = setTimeout(tick, 80);
+    })();
+  }
+  killCancel.addEventListener('click', closeKill);
+  killConfirm.addEventListener('click', async () => {
+    if (!killToken) return;
+    const res = await fetch('/api/control/kill/apply', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: killToken}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { killErr.innerText = data.detail || 'apply failed'; return; }
+    closeKill();
+    document.body.dispatchEvent(new CustomEvent('controls-changed'));
+  });
+
+  // Mode-switch to watch_only: two-step (prepare → apply) invisibly.
+  async function flipModeTo(target) {
+    const prep = await fetch('/api/mode/prepare', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({target}),
+    }).then(r => r.json());
+    if (!prep.token) { alert(prep.detail || 'prepare failed'); return; }
+    const res = await fetch('/api/mode/apply', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({target, token: prep.token}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(data.detail || 'apply failed'); return; }
+    document.body.dispatchEvent(new CustomEvent('mode-changed'));
+  }
+
+  document.getElementById('mobile-ctrls').addEventListener('click', ev => {
+    const btn = ev.target.closest('.btn'); if (!btn || btn.disabled) return;
+    const a = btn.dataset.action;
+    if (a === 'pause') post('/api/control/pause');
+    else if (a === 'resume') post('/api/control/resume');
+    else if (a === 'rearm') post('/api/control/rearm');
+    else if (a === 'kill') startKill();
+    else if (a === 'mode-watch') flipModeTo('watch_only');
+  });
+})();
+</script>
+
+</body>
+</html>
