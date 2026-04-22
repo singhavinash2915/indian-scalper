@@ -898,6 +898,10 @@ def create_app(
             }
         )
 
+    # ---------------- Upstox web re-auth ----------------
+    from dashboard.auth_routes import register_routes as _register_auth_routes
+    _register_auth_routes(app, state, templates)
+
     return app
 
 

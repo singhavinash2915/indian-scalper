@@ -1,0 +1,40 @@
+#cloud-config
+# =============================================================================
+# Indian Scalper — cloud-init user-data
+# =============================================================================
+# Paste this into the "User Data / Cloud-init" box when creating a VM at
+# Hetzner / DigitalOcean / Vultr / any cloud. The bootstrap.sh script does the
+# real work; this file just fetches and runs it.
+#
+# Before pasting:
+#   1. Replace <REPO_URL> with your fork URL (or keep the default if you forked
+#      the original).
+#   2. Replace <TS_AUTHKEY> with a Tailscale auth key from
+#      https://login.tailscale.com/admin/settings/keys (check "Reusable" +
+#      "Pre-approved" so the VM joins your tailnet automatically).
+# =============================================================================
+
+package_update: true
+package_upgrade: false
+
+write_files:
+  - path: /etc/profile.d/scalper.sh
+    permissions: "0644"
+    content: |
+      export TS_AUTHKEY="<TS_AUTHKEY>"
+      export REPO_URL="<REPO_URL>"
+
+runcmd:
+  - |
+    set -euo pipefail
+    export TS_AUTHKEY="<TS_AUTHKEY>"
+    export REPO_URL="<REPO_URL>"
+    export GIT_REF="main"
+
+    # Bootstrap — one command does user, docker, tailscale, firewall, repo, .env.
+    curl -fsSL "${REPO_URL%.git}/raw/main/deploy/cloud/bootstrap.sh" \
+      | bash
+
+    # Log completion so cloud-init-output.log has a clear success marker.
+    echo "==== indian-scalper bootstrap: SUCCESS ==========================" \
+      | tee /var/log/scalper-bootstrap.log

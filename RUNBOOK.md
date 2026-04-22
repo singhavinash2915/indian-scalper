@@ -500,6 +500,71 @@ uv run scalper-pine-parity --symbol RELIANCE --out reliance.csv
 Known divergences that are NOT bugs (warmup differences, last-bar
 volume, pre-market bars) documented in `pine/README.md`.
 
+### Web-based Upstox re-authentication (one-click daily ops)
+
+For cloud deployments where SSH-ing in to run the CLI auth script is friction,
+the dashboard now exposes a web flow that re-auths without restarting the bot:
+
+```
+http://<tailnet-ip>:8080/auth/upstox
+```
+
+Or click the **"Re-auth →"** link in the amber token-status strip on the
+Dashboard tab (strip turns red when the token has expired).
+
+Flow:
+1. Open the page → a big "Log in with Upstox" button appears
+2. Click → Upstox OAuth login → redirects back to the bot's `/auth/upstox/callback`
+3. Bot exchanges code, **hot-swaps the access_token on the running fetcher
+   in memory** + persists to `.env` — no process restart
+4. Success page → back to dashboard, real-time Upstox feed is live again
+
+**One-time Upstox app setup** — before first use, register the callback URL
+shown on the `/auth/upstox` page as an allowed redirect URI at
+https://account.upstox.com/developer/apps. For a cloud VM on a tailnet you'll
+typically register:
+
+```
+http://127.0.0.1:8080/auth/upstox/callback       # for local Mac flow
+http://<tailnet-hostname>:8080/auth/upstox/callback  # for cloud flow
+```
+
+Upstox allows multiple redirect URIs in a single app config.
+
+### One-shot cloud VM bootstrap (Hetzner / DigitalOcean / any)
+
+The `deploy/cloud/bootstrap.sh` script does everything a fresh Ubuntu
+22.04/24.04 VM needs: user, firewall, Docker, Tailscale, repo, `.env`.
+Idempotent — safe to re-run.
+
+**Fastest path (≈ 10 minutes, ≈ ₹340/month)**:
+
+1. Sign up at https://www.hetzner.com/cloud (or DigitalOcean / Vultr).
+2. Get a Tailscale auth key at
+   https://login.tailscale.com/admin/settings/keys (check "Reusable" +
+   "Pre-approved").
+3. Create a **CX11** (Hetzner) or **$4 droplet** (DO) with Ubuntu 24.04.
+4. Paste the contents of `deploy/cloud/cloud-init.yaml` into the
+   "User Data" / "Cloud-init" field, after replacing:
+     - `<TS_AUTHKEY>` with your Tailscale key
+     - `<REPO_URL>` with your fork's Git URL
+5. Click Create. Wait ~5 min for the bootstrap to finish
+   (`/var/log/cloud-init-output.log` on the VM for progress).
+6. On your phone / laptop: open
+   `http://scalper:8080/auth/upstox` (or the tailnet IPv4 if
+   MagicDNS isn't enabled) — complete the web re-auth flow once.
+7. Dashboard is live at `http://scalper:8080/` on your tailnet.
+
+The script:
+- Creates a `scalper` non-root user with SSH key copied from root + a
+  restricted sudoers rule (docker, systemctl, journalctl only).
+- Installs Docker, Tailscale, UFW.
+- Joins your tailnet automatically via `TS_AUTHKEY`.
+- Locks down UFW to SSH + tailnet only — **8080 never exposed publicly**.
+- Clones your repo to `/opt/indian-scalper`, seeds a template `.env`.
+- Leaves final start to you (`docker compose -f docker-compose.tailnet.yml up -d`)
+  so you can review `.env` / `config.yaml` before first boot.
+
 ### Migrating to a Raspberry Pi or cloud VM
 
 Graduate off the Mac when paper week feels solid. Two options:

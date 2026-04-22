@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="panel" style="max-width: 720px; margin: 20px auto;">
+  <h2>Upstox token</h2>
+
+  {% if token_age.present and not token_age.expired %}
+    <div style="padding: 10px 14px; background: rgba(52,211,153,0.08);
+                border: 1px solid rgba(52,211,153,0.25); border-radius: 8px;
+                color: var(--good); font-size: 13px; margin: 10px 0;">
+      <b>●</b> Token active — expires in approximately <b>{{ token_age.expires_in_hours }}&nbsp;hours</b>.
+      You can re-auth any time below.
+    </div>
+  {% elif token_age.present %}
+    <div style="padding: 10px 14px; background: rgba(251,113,133,0.08);
+                border: 1px solid rgba(251,113,133,0.25); border-radius: 8px;
+                color: var(--bad); font-size: 13px; margin: 10px 0;">
+      <b>●</b> Token expired. Data fetcher falls back to yfinance — re-auth below to restore
+      real-time Upstox feed.
+    </div>
+  {% else %}
+    <div style="padding: 10px 14px; background: rgba(251,191,36,0.08);
+                border: 1px solid rgba(251,191,36,0.25); border-radius: 8px;
+                color: var(--warn); font-size: 13px; margin: 10px 0;">
+      <b>●</b> No token present yet. Complete the flow below once to enable real-time NSE data.
+    </div>
+  {% endif %}
+
+  {% if not api_key_present or not secret_present %}
+    <div style="padding: 14px; background: rgba(251,113,133,0.08);
+                border: 1px solid rgba(251,113,133,0.35); border-radius: 8px;
+                margin: 12px 0;">
+      <b style="color: var(--bad);">Missing credentials.</b>
+      Add <span class="mono">UPSTOX_API_KEY</span> and <span class="mono">UPSTOX_API_SECRET</span>
+      to your <span class="mono">.env</span> file, restart the bot, then reload this page.
+    </div>
+  {% endif %}
+
+  <h2 style="margin-top: 18px;">One-time Upstox app setup</h2>
+  <p style="color: var(--muted); font-size: 13px; line-height: 1.6;">
+    Before the first use, add this callback URL to your Upstox app's
+    <i>Allowed Redirect URIs</i> at
+    <a href="https://account.upstox.com/developer/apps" target="_blank"
+       style="color: var(--amber);">account.upstox.com/developer/apps</a>.
+    You only do this once.
+  </p>
+  <div style="display: flex; gap: 8px; align-items: center; margin: 12px 0;">
+    <input id="callback-url" readonly
+           value="{{ callback_url }}"
+           style="flex: 1; padding: 10px 12px; background: rgba(0,0,0,0.3);
+                  color: var(--fg); border: 1px solid var(--border-hi);
+                  border-radius: 8px; font-family: 'JetBrains Mono', monospace;
+                  font-size: 12px;">
+    <button onclick="navigator.clipboard.writeText(document.getElementById('callback-url').value); this.innerText='Copied ✓';">
+      Copy
+    </button>
+  </div>
+
+  <h2 style="margin-top: 18px;">Re-authenticate</h2>
+  <p style="color: var(--muted); font-size: 13px; line-height: 1.6;">
+    Click the button below. You'll be bounced to Upstox to log in with your
+    mobile + PIN. On success, Upstox redirects back here, the bot swaps the
+    token in-memory, and you're done — <b>no restart needed</b>.
+  </p>
+
+  {% if login_url %}
+    <div style="text-align: center; margin: 20px 0;">
+      <a href="{{ login_url }}"
+         style="display: inline-block; padding: 14px 28px;
+                background: linear-gradient(135deg, #f5a623 0%, #ffc25c 100%);
+                color: #0a0b10; font-weight: 700; font-size: 14px;
+                letter-spacing: 0.08em; text-transform: uppercase;
+                text-decoration: none; border-radius: 10px;
+                box-shadow: 0 10px 28px -10px rgba(245,166,35,0.6);">
+        Log in with Upstox →
+      </a>
+    </div>
+  {% else %}
+    <div style="color: var(--muted); font-style: italic; text-align: center; padding: 16px;">
+      Fill in credentials above, then reload.
+    </div>
+  {% endif %}
+
+  <h2 style="margin-top: 18px;">Cheat sheet</h2>
+  <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; padding-left: 20px;">
+    <li>Tokens expire daily at <b>03:30 IST</b>.</li>
+    <li>If expired, the bot falls back to <b>yfinance</b> (~15 min delayed) automatically — <b>no crash</b>.</li>
+    <li>Re-auth any time — the dashboard stays live, no restart needed.</li>
+    <li>You can also run <span class="mono">uv run scalper-upstox-auth</span> from the terminal if the bot is <i>not</i> running.</li>
+  </ul>
+</div>
+
+{% endblock %}
