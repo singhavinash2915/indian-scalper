@@ -73,6 +73,16 @@ risk:
   time_stop_minutes: 90
   eod_squareoff_intraday: true
   never_hold_options_overnight: true
+  # Position sizing —
+  #   equal_bucket : every slot gets starting_capital / bucket_slots (default)
+  #   cash_aware   : first entry can consume up to 95% of available cash
+  sizing_mode: equal_bucket
+  # bucket_slots (only used in equal_bucket mode):
+  #   auto     = max_equity_positions + max_fno_positions (5 by default)
+  #   equity   = max_equity_positions only (3 by default; ignores F&O slots)
+  #   <int>    = override, e.g. "4"
+  bucket_slots: equity
+  bucket_safety_margin: 0.95   # 5% reserved for slippage + bar drift
 
 runtime:
   # Seeded into control_flags.trade_mode on first DB init ONLY.
@@ -157,6 +167,17 @@ class RiskCfg(BaseModel):
     time_stop_minutes: int = 90
     eod_squareoff_intraday: bool = True
     never_hold_options_overnight: bool = True
+    # Position sizing mode — see src/risk/position_sizing.py.
+    #   equal_bucket (default): every slot gets starting_capital / bucket_slots.
+    #                           Prevents the first entry monopolising capital.
+    #   cash_aware:             first-come-first-served against available cash.
+    sizing_mode: Literal["equal_bucket", "cash_aware"] = "equal_bucket"
+    # Used in equal_bucket mode:
+    #   auto       : bucket_slots = max_equity_positions + max_fno_positions
+    #   equity     : bucket_slots = max_equity_positions only (F&O ignored)
+    #   <int>      : fixed slot count (integer as a string, e.g. "4")
+    bucket_slots: str = "equity"
+    bucket_safety_margin: float = 0.95   # 5% reserved for slippage
 
     @field_validator("risk_per_trade_pct", "daily_loss_limit_pct")
     @classmethod
@@ -164,6 +185,36 @@ class RiskCfg(BaseModel):
         if not 0 < v < 100:
             raise ValueError("percent must be between 0 and 100")
         return v
+
+    @field_validator("bucket_safety_margin")
+    @classmethod
+    def sane_margin(cls, v: float) -> float:
+        if not 0.5 < v <= 1.0:
+            raise ValueError("bucket_safety_margin must be in (0.5, 1.0]")
+        return v
+
+    @field_validator("bucket_slots", mode="before")
+    @classmethod
+    def validate_slots(cls, v) -> str:
+        v = str(v).strip().lower()
+        if v in {"auto", "equity"}:
+            return v
+        try:
+            n = int(v)
+        except (ValueError, TypeError):
+            raise ValueError("bucket_slots must be 'auto', 'equity', or an integer") from None
+        if n <= 0:
+            raise ValueError("bucket_slots must be > 0")
+        return str(n)
+
+    def resolve_bucket_slots(self) -> int:
+        """Collapse bucket_slots (string) into the concrete per-position count."""
+        v = self.bucket_slots
+        if v == "auto":
+            return max(1, self.max_equity_positions + self.max_fno_positions)
+        if v == "equity":
+            return max(1, self.max_equity_positions)
+        return max(1, int(v))
 
 
 class Settings(BaseModel):

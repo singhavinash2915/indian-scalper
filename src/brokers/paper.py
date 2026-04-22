@@ -197,6 +197,29 @@ class PaperBroker(BrokerBase):
         self.om.mark_to_market(self._ltp)
         self.om.snapshot_equity()
 
+    def refresh_live_ltp(self, symbols: list[str] | None = None) -> dict[str, float]:
+        """Pull real-time LTP for the given symbols (default: open positions)
+        and mark-to-market. Used by the dashboard to render live P&L
+        between scheduler ticks.
+
+        No-op + silent fallback if the fetcher doesn't expose ``get_ltp``
+        (e.g. yfinance backend, tests).
+        """
+        if not hasattr(self.fetcher, "get_ltp"):
+            return {}
+        targets = symbols if symbols is not None else [p.symbol for p in self.om.positions.values() if p.qty != 0]
+        if not targets:
+            return {}
+        try:
+            fresh = self.fetcher.get_ltp(targets)   # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.warning("refresh_live_ltp failed: {}", exc)
+            return {}
+        if fresh:
+            self._ltp.update(fresh)
+            self.om.mark_to_market(self._ltp)
+        return fresh
+
     def set_position_stops(
         self,
         symbol: str,

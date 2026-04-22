@@ -406,6 +406,34 @@ KPIs, and the most recent `entered` + `watch_only_logged` signals.
 The universe edit + chart drawer live on `/` (desktop) — anything
 you'd normally do on the phone is on `/m/`.
 
+### Position sizing — `equal_bucket` vs `cash_aware`
+
+Controls whether the first entry of the day can monopolise capital.
+Flip in `config.yaml` under `risk:` — no code change, no restart needed
+beyond the next scan tick.
+
+```yaml
+risk:
+  sizing_mode: equal_bucket    # default — safe
+  bucket_slots: equity         # equity | auto | <int>
+  bucket_safety_margin: 0.95
+```
+
+**`equal_bucket` (default)** — each of N slots gets
+`starting_capital / bucket_slots × safety_margin` rupees max. With 3-slot
+equity mode on ₹5,00,000 capital, each position is capped at ₹1,58,333
+regardless of how much cash is idle. Prevents a single big entry from
+starving later ones.
+
+  - `bucket_slots: equity`  → `max_equity_positions` only (3 default)
+  - `bucket_slots: auto`    → `max_equity + max_fno` (5 default)
+  - `bucket_slots: "4"`     → fixed override
+
+**`cash_aware` (legacy)** — sizes against available cash × 0.95. First
+entry can eat up to 95% of the wallet. Useful when you're deliberately
+running a single-name concentrated strategy, but unsafe for default
+multi-name scalping.
+
 ### Upstox real-time data feed
 
 Swap the default yfinance (~15 min delay) for real-time NSE candles via

@@ -205,6 +205,7 @@ class UpstoxFetcher:
         access_token: str | None = None,
         instruments: "InstrumentMaster | None" = None,   # type: ignore[name-defined]
         base_url: str = _UPSTOX_BASE,
+        ltp_cache_ttl: float = 1.0,
     ) -> None:
         import os
         self.access_token = access_token or os.environ.get("UPSTOX_ACCESS_TOKEN")
@@ -215,6 +216,11 @@ class UpstoxFetcher:
             )
         self.instruments = instruments
         self.base_url = base_url
+        # Short TTL cache: when multiple dashboard panels render in the
+        # same second they share one Upstox round-trip. Not a long-term
+        # cache — anything > 1s would feel stale on the live-P&L view.
+        self._ltp_cache_ttl = ltp_cache_ttl
+        self._ltp_cache: dict[str, tuple[float, float]] = {}  # symbol → (ts, price)
 
     # -- key resolution ------------------------------------------------- #
 
@@ -271,6 +277,64 @@ class UpstoxFetcher:
         return self._http_get(url).get("data", {}).get("candles", [])
 
     # -- public API ----------------------------------------------------- #
+
+    def get_ltp(self, symbols: list[str]) -> dict[str, float]:
+        """Batched real-time LTP fetch. Returns ``{symbol: last_price}``.
+
+        Caches each symbol for ``ltp_cache_ttl`` seconds — the dashboard's
+        positions + KPI partials fire within the same tick, so we coalesce
+        their calls into one HTTP round-trip.
+        """
+        import time
+        now = time.monotonic()
+        fresh: dict[str, float] = {}
+        stale: list[str] = []
+        for sym in symbols:
+            hit = self._ltp_cache.get(sym)
+            if hit and now - hit[0] < self._ltp_cache_ttl:
+                fresh[sym] = hit[1]
+            else:
+                stale.append(sym)
+        if not stale:
+            return fresh
+
+        # Resolve ISINs for anything not cached.
+        keys: list[str] = []
+        key_to_sym: dict[str, str] = {}
+        for sym in stale:
+            try:
+                k = self._instrument_key(sym)
+            except Exception as exc:
+                logger.warning("UpstoxFetcher LTP skip {} ({})", sym, exc)
+                continue
+            keys.append(k)
+            key_to_sym[f"NSE_EQ:{k.split('|', 1)[1]}"] = sym  # Upstox response key format
+        if not keys:
+            return fresh
+
+        url = f"{self.base_url}/market-quote/ltp"
+        params = {"instrument_key": ",".join(keys)}
+        try:
+            data = self._http_get(url, params=params).get("data", {})
+        except Exception as exc:
+            logger.warning("UpstoxFetcher LTP fetch failed: {}", exc)
+            return fresh
+
+        for response_key, payload in data.items():
+            sym = key_to_sym.get(response_key)
+            if sym is None:
+                # Fallback: find by instrument_token suffix match.
+                tok = payload.get("instrument_token", "")
+                for k, v in key_to_sym.items():
+                    if k == f"NSE_EQ:{tok.split('|', 1)[-1]}":
+                        sym = v
+                        break
+            if sym is None:
+                continue
+            price = float(payload.get("last_price", 0.0))
+            fresh[sym] = price
+            self._ltp_cache[sym] = (now, price)
+        return fresh
 
     def get_candles(self, symbol: str, interval: str, lookback: int) -> list[Candle]:
         import pandas as pd

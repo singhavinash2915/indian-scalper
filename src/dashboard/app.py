@@ -158,6 +158,12 @@ def create_app(
 
     @app.get("/partials/positions", response_class=HTMLResponse)
     def positions_partial(request: Request) -> HTMLResponse:
+        # Live-refresh LTP for open positions so P&L updates on every
+        # dashboard tick (not just every scheduler scan).
+        try:
+            state.broker.refresh_live_ltp()
+        except Exception:
+            pass
         positions = state.broker.get_positions()
         enriched = [
             {
@@ -952,6 +958,13 @@ def _control_state_context(state: DashboardState) -> dict:
 def _kpis_context(state: DashboardState) -> dict:
     broker = state.broker
     settings = state.settings
+
+    # Live-refresh LTP + mark-to-market so equity + P&L reflect the
+    # last traded price, not the last scan-tick's stale close.
+    try:
+        broker.refresh_live_ltp()
+    except Exception:
+        pass
 
     funds = broker.get_funds()
     positions = broker.get_positions()

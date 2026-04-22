@@ -433,10 +433,7 @@ def _evaluate_symbol(
     lot_size = inst.lot_size if inst else 1
 
     funds = ctx.broker.get_funds()
-    # Cap notional at 95% of available cash — the 5% buffer absorbs
-    # per-order slippage + bar-to-bar drift between sizing and fill, so
-    # a single position never triggers the InsufficientFundsError guard
-    # at settle time.
+    max_notional = _resolve_max_notional(ctx, funds)
     size = position_size(
         capital=funds["equity"],
         risk_per_trade_pct=ctx.settings.risk.risk_per_trade_pct,
@@ -444,7 +441,7 @@ def _evaluate_symbol(
         stop_price=stop,
         lot_size=lot_size,
         segment=segments[symbol],
-        max_notional=funds["available"] * 0.95,
+        max_notional=max_notional,
     )
     if size.qty == 0:
         logger.debug("[{}] {} sized to zero: {}", trace_id, symbol, size.note)
@@ -578,6 +575,34 @@ def _manage_positions(
             if report:
                 exits.append(report)
     return exits
+
+
+def _resolve_max_notional(ctx: "ScanContext", funds: dict) -> float:
+    """Compute the per-position notional cap based on the configured
+    sizing_mode.
+
+    ``equal_bucket`` (default)
+        Each slot gets ``starting_capital / bucket_slots × safety_margin``.
+        Prevents the first entry of the day from monopolising capital.
+        Bounded by current available cash so we never oversize the
+        broker's InsufficientFunds guard.
+
+    ``cash_aware`` (legacy)
+        ``available × 0.95`` — first-come-first-eat. Useful for
+        single-symbol aggressive concentration.
+    """
+    risk_cfg = ctx.settings.risk
+    available = float(funds.get("available", 0.0))
+
+    mode = getattr(risk_cfg, "sizing_mode", "equal_bucket")
+    if mode == "cash_aware":
+        return available * 0.95
+
+    # equal_bucket
+    slots = risk_cfg.resolve_bucket_slots()
+    bucket = ctx.settings.capital.starting_inr / slots * risk_cfg.bucket_safety_margin
+    # Never exceed what we actually have in cash right now.
+    return min(bucket, available * 0.95)
 
 
 def _exit_triggered(pos: Position, candle) -> str | None:
