@@ -238,6 +238,17 @@
     <div class="empty">Loading…</div>
   </div>
 
+  <!-- Open positions — surfaced above controls so the live book is always visible first -->
+  <div class="card">
+    <h2>Open Positions</h2>
+    <div id="mobile-positions"
+         hx-get="/m/partials/positions"
+         hx-trigger="load, every 5s"
+         hx-swap="innerHTML">
+      <div class="empty">Loading…</div>
+    </div>
+  </div>
+
   <!-- Controls -->
   <div class="card">
     <h2>Controls</h2>

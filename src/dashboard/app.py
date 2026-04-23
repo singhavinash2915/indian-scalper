@@ -333,6 +333,32 @@ def create_app(
             request, "mobile_signals.html", {"rows": rows},
         )
 
+    @app.get("/m/partials/positions", response_class=HTMLResponse)
+    def mobile_positions_partial(request: Request) -> HTMLResponse:
+        # Live-refresh LTP before rendering so P&L updates on each tick.
+        try:
+            state.broker.refresh_live_ltp()
+        except Exception:
+            pass
+        positions = state.broker.get_positions()
+        enriched = [
+            {
+                "symbol": p.symbol,
+                "qty": p.qty,
+                "avg_price": p.avg_price,
+                "ltp": state.broker._ltp.get(p.symbol, p.avg_price),
+                "stop_loss": p.stop_loss,
+                "take_profit": p.take_profit,
+                "trail_stop": p.trail_stop,
+                "opened_at": p.opened_at,
+                "pnl": (state.broker._ltp.get(p.symbol, p.avg_price) - p.avg_price) * p.qty,
+            }
+            for p in positions
+        ]
+        return templates.TemplateResponse(
+            request, "mobile_positions.html", {"positions": enriched},
+        )
+
     # ---------------- Controls (D11 Slice 1) ----------------
 
     @app.get("/api/control/state")

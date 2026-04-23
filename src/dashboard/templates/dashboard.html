@@ -71,6 +71,17 @@
   <div class="panel"><span class="empty">Loading KPIs…</span></div>
 </div>
 
+<!-- Positions — moved ABOVE equity curve so you see what's live first -->
+<div class="panel" style="margin-top: 16px;">
+  <h2>Open Positions</h2>
+  <div id="positions"
+       hx-get="/partials/positions"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <span class="empty">Loading…</span>
+  </div>
+</div>
+
 <div class="grid" style="grid-template-columns: 2fr 1fr; margin-top: 16px;">
   <!-- Equity curve (Plotly, hydrated by JS) -->
   <section class="panel">
@@ -78,9 +89,7 @@
     <div id="equity-curve" style="width:100%; height: 340px;"></div>
   </section>
 
-  <!-- Legacy kill-switch panel retired in D11 Slice 1 — replaced by the
-       scheduler controls in the top bar. /actions/{kill,unkill} still
-       work for API-level callers. -->
+  <!-- Scheduler cheat-sheet — kept as sibling to equity for layout balance -->
   <section class="panel">
     <h2>Scheduler cheat-sheet</h2>
     <div class="empty">
@@ -103,17 +112,6 @@
     <span class="empty">Loading…</span>
   </div>
 </details>
-
-<!-- Positions — refresh every 5s -->
-<div class="panel" style="margin-top: 16px;">
-  <h2>Open Positions</h2>
-  <div id="positions"
-       hx-get="/partials/positions"
-       hx-trigger="load, every 5s"
-       hx-swap="innerHTML">
-    <span class="empty">Loading…</span>
-  </div>
-</div>
 
 <!-- Trade history -->
 <div class="panel" style="margin-top: 16px;">

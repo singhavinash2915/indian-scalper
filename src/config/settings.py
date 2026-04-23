@@ -62,7 +62,7 @@ strategy:
 
 risk:
   risk_per_trade_pct: 2.0
-  stop_atr_multiplier: 1.0
+  stop_atr_multiplier: 1.5              # wider stops survive opening-bar wicks
   trailing_atr_multiplier_low_vol: 2.5
   trailing_atr_multiplier_high_vol: 1.8
   take_profit_atr_multiplier: 3.0
@@ -92,7 +92,11 @@ runtime:
 
 paper:
   slippage_pct: 0.05
-  fill_on: next_candle_open      # next_candle_open | current_close
+  # Fill policy:
+  #   live_market       — fetch live LTP at place-time and fill IMMEDIATELY
+  #                       with slippage (mirrors a real broker's MARKET order).
+  #   next_candle_open  — legacy: queue order, fill on the next 15m candle's open.
+  fill_on: live_market
 
 data:
   # Candle feed for paper/live scoring.
@@ -156,7 +160,7 @@ class StrategyCfg(BaseModel):
 
 class RiskCfg(BaseModel):
     risk_per_trade_pct: float = 2.0
-    stop_atr_multiplier: float = 1.0
+    stop_atr_multiplier: float = 1.5
     trailing_atr_multiplier_low_vol: float = 2.5
     trailing_atr_multiplier_high_vol: float = 1.8
     take_profit_atr_multiplier: float = 3.0

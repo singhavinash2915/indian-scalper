@@ -1,0 +1,30 @@
+{# Mobile-friendly positions card: one block per position.
+   Polled every 5s by mobile.html. Same data source as /partials/positions
+   but stacked layout so it fits a phone screen. #}
+{% if positions %}
+  {% for p in positions %}
+    {% set pnl = p.pnl %}
+    <div style="padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px;">
+        <div class="sym">{{ p.symbol }}</div>
+        <div class="mono {{ 'good' if pnl >= 0 else 'bad' }}" style="font-weight: 700; font-size: 15px;">
+          {{ "{:+,.0f}".format(pnl) }}
+        </div>
+      </div>
+      <div class="mono" style="display: flex; justify-content: space-between; color: var(--muted); font-size: 11.5px; margin-top: 3px;">
+        <span>{{ p.qty }} @ ₹{{ "{:,.2f}".format(p.avg_price) }}</span>
+        <span>LTP ₹{{ "{:,.2f}".format(p.ltp) }}</span>
+      </div>
+      <div class="mono" style="display: flex; justify-content: space-between; color: var(--text-mute); font-size: 10.5px; margin-top: 3px;">
+        <span>SL {{ "₹{:,.2f}".format(p.stop_loss) if p.stop_loss is not none else "—" }}</span>
+        <span>Trail {{ "₹{:,.2f}".format(p.trail_stop) if p.trail_stop is not none else "—" }}</span>
+        <span>TP {{ "₹{:,.2f}".format(p.take_profit) if p.take_profit is not none else "—" }}</span>
+      </div>
+    </div>
+  {% endfor %}
+  <div class="mono" style="color: var(--text-mute); font-size: 10.5px; text-align: right; margin-top: 6px; letter-spacing: 0.06em;">
+    {{ positions|length }} open · refreshes every 5s
+  </div>
+{% else %}
+  <div class="empty">No open positions.</div>
+{% endif %}

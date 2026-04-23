@@ -64,6 +64,12 @@ class PaperBroker(BrokerBase):
 
         paper_cfg = settings.raw.get("paper", {})
         self.slippage_pct: float = paper_cfg.get("slippage_pct", 0.05)
+        # Fill policy:
+        #   live_market       — fetch LTP from the data source at place-time
+        #                       and fill IMMEDIATELY (best live-broker parity;
+        #                       requires a fetcher that exposes get_ltp()).
+        #   next_candle_open  — legacy: queue order, fill on next candle's open.
+        self.fill_mode: str = paper_cfg.get("fill_on", "live_market")
 
         # Collaborators.
         self.store = StateStore(self._db_path)
@@ -163,10 +169,69 @@ class PaperBroker(BrokerBase):
         )
         if rejection is not None:
             return rejection
-        return self.om.submit(
+        order = self.om.submit(
             symbol=symbol, qty=qty, side=side, order_type=order_type,
             price=price, trigger_price=trigger_price, ts=ts,
         )
+        # Live-market mode: fill MARKET orders now at real-time LTP + slippage
+        # instead of waiting for next_candle_open. Closer to how a real
+        # exchange fills MARKET orders.
+        if (
+            self.fill_mode == "live_market"
+            and order.status == "PENDING"
+            and order_type == OrderType.MARKET
+        ):
+            self._try_fill_live(order, ts)
+            # On successful fill, _fill() removes from om.orders and persists
+            # FILLED state — refresh from SQLite so caller sees final status.
+            if order.id not in self.om.orders:
+                refreshed = self.store.get_order(order.id)
+                if refreshed is not None:
+                    order = refreshed
+        return order
+
+    def _try_fill_live(self, order: Order, ts: datetime | None = None) -> bool:
+        """Fill the given PENDING MARKET order using live LTP + slippage.
+
+        Best-effort: returns False + leaves the order PENDING if no LTP is
+        available (backtest fetcher, network hiccup). The next scheduler
+        tick's settle() will then fall back to next-candle-open logic.
+        """
+        symbol = order.symbol
+        ltp = self._lookup_live_ltp(symbol)
+        if ltp is None or ltp <= 0:
+            logger.debug("live fill skipped for {} (no LTP available)", symbol)
+            return False
+        slip_sign = 1 if order.side == Side.BUY else -1
+        fill_price = ltp * (1 + slip_sign * self.slippage_pct / 100.0)
+        fill_ts = ts or datetime.now(IST)
+        try:
+            self.om._fill(order, fill_price, fill_ts)
+            self._ltp[symbol] = ltp
+        except Exception as exc:
+            logger.warning("live fill failed for {}: {}", symbol, exc)
+            return False
+        return True
+
+    def _lookup_live_ltp(self, symbol: str) -> float | None:
+        """Return real-time LTP for ``symbol`` or None if unavailable.
+
+        Requires a fetcher that exposes ``get_ltp``. Backtest / test
+        fetchers (FakeCandleFetcher) deliberately fall through to None so
+        legacy next-candle-open settlement kicks in on the next tick.
+        """
+        fetcher = getattr(self, "fetcher", None)
+        if fetcher is None or not hasattr(fetcher, "get_ltp"):
+            return None
+        try:
+            prices = fetcher.get_ltp([symbol])
+        except Exception as exc:
+            logger.debug("get_ltp failed for {}: {}", symbol, exc)
+            return None
+        ltp = prices.get(symbol)
+        if ltp and ltp > 0:
+            return float(ltp)
+        return None
 
     def modify_order(self, order_id: str, **kwargs: object) -> Order:
         return self.om.modify(order_id, **kwargs)
