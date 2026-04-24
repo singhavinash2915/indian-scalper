@@ -1,0 +1,175 @@
+// =============================================================================
+// Indian Scalper — 8-Factor Scorer (SHORT side, Pine Script v5)
+// =============================================================================
+// Source of truth: src/strategy/scoring.py::score_symbol_short in the
+// indian-scalper repo.
+//
+// Mirrors indian-scalper-scorer.pine downward — every factor is the bearish
+// version of the long scorer. Add this indicator to a chart alongside the
+// long scorer to see both sides at once.
+//
+// Usage:
+//   1. TradingView → Pine Editor → paste this file → Save → "Add to chart".
+//   2. Pick the symbol + 15-minute timeframe (same as bot).
+//   3. Right-panel → Alerts → "Create alert on Indian Scalper Scorer SHORT" →
+//      condition "score crosses above min_score". Fires when the bot's short
+//      entry condition would trigger.
+//
+// Factor mapping (long → short):
+//   ema_stack   — close < fast < mid < slow, close < trend  (down-stack)
+//   vwap_cross  — close crossed BELOW vwap in last 2 bars
+//   macd_cross  — histogram crossed BELOW 0
+//   rsi_entry   — rsi in [25, 45] by default (bearish momentum range)
+//   adx_trend   — adx >= adx_min (direction-agnostic, reused)
+//   vol_surge   — volume >= sma(20) × multiplier (direction-agnostic)
+//   bb_breakout — expanding bandwidth + close BELOW middle band
+//   supertrend  — st_dir == 1 (bearish) AND close BELOW st_line
+//
+// Hard block:
+//   rsi < short_rsi_hard_block (default 22) — too oversold to short; bounce risk.
+//
+// Caveats (same as long scorer):
+//   - NSE intraday volume from TV is T+0 best-effort; bot uses Upstox.
+//   - Early-session bars differ by ±1 point due to warmup conventions.
+// =============================================================================
+
+//@version=5
+indicator(
+     title       = "Indian Scalper — 8-Factor Scorer (SHORT)",
+     shorttitle  = "Scalper SHORT 8/8",
+     overlay     = false,
+     max_labels_count = 50
+ )
+
+// ───── Inputs (match config.yaml short_* defaults) ───────────────────────────
+ema_fast_len        = input.int(5,   "EMA fast length",   group="Strategy")
+ema_mid_len         = input.int(13,  "EMA mid length",    group="Strategy")
+ema_slow_len        = input.int(34,  "EMA slow length",   group="Strategy")
+ema_trend_len       = input.int(50,  "EMA trend length",  group="Strategy")
+rsi_len             = input.int(14,  "RSI length",        group="Strategy")
+rsi_short_lo        = input.float(25.0, "RSI short entry low",   group="Strategy")
+rsi_short_hi        = input.float(45.0, "RSI short entry high",  group="Strategy")
+rsi_short_block     = input.float(22.0, "RSI short hard-block (below = too oversold)", group="Strategy")
+adx_len             = input.int(14,  "ADX length",        group="Strategy")
+adx_min             = input.float(22.0, "ADX minimum",    group="Strategy")
+vol_sma_len         = input.int(20,  "Volume SMA length", group="Strategy")
+vol_mult            = input.float(2.0, "Volume surge × SMA", group="Strategy")
+bb_len              = input.int(20,  "Bollinger length",  group="Strategy")
+bb_std              = input.float(2.0, "Bollinger std",   group="Strategy")
+st_len              = input.int(10,  "Supertrend ATR length", group="Strategy")
+st_mult             = input.float(3.0, "Supertrend multiplier", group="Strategy")
+min_score           = input.int(6,   "Minimum score to enter short",
+                            tooltip = "Matches config.yaml strategy.min_score",
+                            group = "Alerts")
+
+// ───── Indicators ─────────────────────────────────────────────────────────────
+ema_fast  = ta.ema(close, ema_fast_len)
+ema_mid   = ta.ema(close, ema_mid_len)
+ema_slow  = ta.ema(close, ema_slow_len)
+ema_trend = ta.ema(close, ema_trend_len)
+
+rsi = ta.rsi(close, rsi_len)
+
+[macd_line, signal_line, hist] = ta.macd(close, 12, 26, 9)
+[dip_plus, dip_minus, adx] = ta.dmi(adx_len, adx_len)
+
+vol_sma = ta.sma(volume, vol_sma_len)
+
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, bb_len, bb_std)
+bb_bw_raw  = (bb_upper - bb_lower) / bb_mid * 100
+bb_bw      = na(bb_bw_raw) ? 0.0 : bb_bw_raw
+bb_bw_min  = ta.lowest(bb_bw, 20)
+
+[st_line, st_dir] = ta.supertrend(st_mult, st_len)
+
+vwap_ = ta.vwap(hlc3)
+
+// ───── Bearish factor checks — mirror scoring.py::score_symbol_short ─────────
+f_ema_stack    = close < ema_fast and ema_fast < ema_mid and ema_mid < ema_slow and close < ema_trend
+f_vwap_cross   = close < vwap_ and close[1] >= vwap_[1]
+f_macd_cross   = hist < 0 and hist[1] >= 0
+f_rsi_entry    = rsi >= rsi_short_lo and rsi <= rsi_short_hi
+f_adx_trend    = adx >= adx_min
+f_vol_surge    = volume >= vol_sma * vol_mult
+bb_expansion_ratio = bb_bw_min > 0 ? bb_bw / bb_bw_min : 0.0
+f_bb_breakout  = bb_expansion_ratio >= 1.5 and bb_bw > bb_bw[5] * 1.1 and close < bb_mid
+f_supertrend   = st_dir == 1 and close < st_line   // Pine returns +1 for bearish
+
+// ───── Score + hard block ────────────────────────────────────────────────────
+score = (f_ema_stack    ? 1 : 0) +
+     (f_vwap_cross   ? 1 : 0) +
+     (f_macd_cross   ? 1 : 0) +
+     (f_rsi_entry    ? 1 : 0) +
+     (f_adx_trend    ? 1 : 0) +
+     (f_vol_surge    ? 1 : 0) +
+     (f_bb_breakout  ? 1 : 0) +
+     (f_supertrend   ? 1 : 0)
+
+blocked = rsi < rsi_short_block
+effective_score = blocked ? 0 : score
+
+// ───── Plots (inverted colour scheme from long scorer) ───────────────────────
+score_col = blocked ? color.new(color.aqua, 0) :
+     effective_score >= 6 ? color.new(color.red, 0) :
+     effective_score >= 4 ? color.new(color.orange, 0) :
+     color.new(color.gray, 0)
+
+plot(effective_score, title="Score", style=plot.style_stepline, linewidth=3,
+     color=score_col)
+
+hline(min_score, "min_score threshold", color=color.new(color.aqua, 50),
+      linestyle=hline.style_dashed)
+hline(6, "strong short (6/8)", color=color.new(color.red, 70),
+      linestyle=hline.style_dotted)
+hline(0, "", color=color.new(color.gray, 90))
+
+bgcolor(
+     blocked                   ? color.new(color.aqua,    85) :
+     effective_score >= 6      ? color.new(color.red,     92) :
+     effective_score >= 4      ? color.new(color.orange,  94) : na,
+     title="Regime background")
+
+// ───── Per-factor breakdown table (top-right of pane) ─────────────────────────
+var table t = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 85))
+
+tick(cond) => cond ? "✓" : "·"
+cell_col(cond) => cond ? color.new(color.red, 0) : color.new(color.gray, 40)
+
+if barstate.islast
+    table.cell(t, 0, 0, "Short",      text_color=color.white, text_size=size.small, bgcolor=color.new(color.black, 20))
+    table.cell(t, 1, 0, str.tostring(effective_score) + "/8",
+               text_color=score_col, text_size=size.small, bgcolor=color.new(color.black, 20))
+    table.cell(t, 0, 1, "EMA stack▼",  text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 1, tick(f_ema_stack),  text_color=cell_col(f_ema_stack),  text_size=size.tiny)
+    table.cell(t, 0, 2, "VWAP cross▼", text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 2, tick(f_vwap_cross), text_color=cell_col(f_vwap_cross), text_size=size.tiny)
+    table.cell(t, 0, 3, "MACD cross▼", text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 3, tick(f_macd_cross), text_color=cell_col(f_macd_cross), text_size=size.tiny)
+    table.cell(t, 0, 4, "RSI 25-45",   text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 4, tick(f_rsi_entry),  text_color=cell_col(f_rsi_entry),  text_size=size.tiny)
+    table.cell(t, 0, 5, "ADX >= min",  text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 5, tick(f_adx_trend),  text_color=cell_col(f_adx_trend),  text_size=size.tiny)
+    table.cell(t, 0, 6, "Volume surge",text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 6, tick(f_vol_surge),  text_color=cell_col(f_vol_surge),  text_size=size.tiny)
+    table.cell(t, 0, 7, "BB break▼",   text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 7, tick(f_bb_breakout),text_color=cell_col(f_bb_breakout),text_size=size.tiny)
+    table.cell(t, 0, 8, "Supertrend▼", text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 8, tick(f_supertrend), text_color=cell_col(f_supertrend), text_size=size.tiny)
+    table.cell(t, 0, 9, "RSI block?",  text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 9, blocked ? "YES" : "no",
+               text_color = blocked ? color.new(color.aqua, 0) : color.new(color.gray, 30),
+               text_size=size.tiny)
+
+// ───── Alerts ────────────────────────────────────────────────────────────────
+// Fires when the bot's short-entry gate would trip: effective score crosses
+// above min_score (same threshold as the long scorer).
+alertcondition(
+     ta.crossover(effective_score, min_score),
+     title = "Short score crossed entry threshold",
+     message = "{{ticker}} {{interval}} SHORT score ≥ min_score ({{close}})")
+
+// Extra: hard-block alert — RSI crossed down into oversold zone.
+alertcondition(
+     ta.crossunder(rsi, rsi_short_block),
+     title = "RSI crossed into short hard-block (oversold) zone",
+     message = "{{ticker}} RSI crossed below {{rsi_short_block}} — bot will not short even on 8/8")

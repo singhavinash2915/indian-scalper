@@ -7,8 +7,19 @@ so you can eyeball whether the two agree.
 
 | File | What it is |
 |---|---|
-| `indian-scalper-scorer.pine` | The Pine Script v5 indicator. Paste into TradingView's Pine editor. |
+| `indian-scalper-scorer.pine` | **Long-side** (bullish) 8-factor scorer. Paste into TradingView's Pine editor. |
+| `indian-scalper-scorer-short.pine` | **Short-side** (bearish) 8-factor scorer — mirror of the long scorer. Add this alongside to see both sides. |
 | `README.md` | This doc. |
+
+## Both sides side-by-side
+
+The bot's scan loop (when `strategy.enable_shorts: true`) evaluates each
+symbol against **both** the long and short scorers, then picks the higher
+side. The two Pine files mirror this: add both indicators to the same chart
+and you'll see the long-score pane in **green/amber/grey** and the
+short-score pane in **red/amber/grey**. When one lights up above 6, the
+other is almost always below 4 — that's the market telling you which way
+to go.
 
 ## One-time setup
 
