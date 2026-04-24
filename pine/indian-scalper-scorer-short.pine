@@ -58,9 +58,7 @@ bb_len              = input.int(20,  "Bollinger length",  group="Strategy")
 bb_std              = input.float(2.0, "Bollinger std",   group="Strategy")
 st_len              = input.int(10,  "Supertrend ATR length", group="Strategy")
 st_mult             = input.float(3.0, "Supertrend multiplier", group="Strategy")
-min_score           = input.int(6,   "Minimum score to enter short",
-                            tooltip = "Matches config.yaml strategy.min_score",
-                            group = "Alerts")
+min_score           = input.int(6, "Minimum score to enter short", tooltip="Matches config.yaml strategy.min_score", group="Alerts")
 
 // ───── Indicators ─────────────────────────────────────────────────────────────
 ema_fast  = ta.ema(close, ema_fast_len)
@@ -172,4 +170,4 @@ alertcondition(
 alertcondition(
      ta.crossunder(rsi, rsi_short_block),
      title = "RSI crossed into short hard-block (oversold) zone",
-     message = "{{ticker}} RSI crossed below {{rsi_short_block}} — bot will not short even on 8/8")
+     message = "{{ticker}} RSI crossed into oversold zone — bot will not short even on 8/8")
