@@ -59,6 +59,18 @@ strategy:
   ema_trend: 50
   supertrend_period: 10
   supertrend_multiplier: 3
+  # Regime filter — skip new entries when proxy symbol's ADX is below min.
+  regime_filter_enabled: false
+  regime_filter_proxy_symbol: RELIANCE
+  regime_filter_min_adx: 22.0
+  # Per-symbol cooldown — block re-entry after a stop_loss / trail_stop
+  # / time_stop exit for N minutes. 0 = disabled.
+  cooldown_minutes: 0
+  # Short-side intraday — off by default. Opt in after paper testing.
+  enable_shorts: false
+  short_rsi_entry_low: 25
+  short_rsi_entry_high: 45
+  short_rsi_hard_block: 22
 
 risk:
   risk_per_trade_pct: 2.0
@@ -156,6 +168,26 @@ class StrategyCfg(BaseModel):
     ema_trend: int = 50
     supertrend_period: int = 10
     supertrend_multiplier: float = 3.0
+
+    # ---- Regime filter (NIFTY-style ADX gate on a proxy symbol) ----
+    # Blocks new entries when the broad market isn't trending. Default off.
+    regime_filter_enabled: bool = False
+    regime_filter_proxy_symbol: str = "RELIANCE"
+    regime_filter_min_adx: float = 22.0
+
+    # ---- Per-symbol cooldown after a stop-out ----
+    # After stop_loss / trail_stop / time_stop exit, block re-entry on the
+    # same symbol for N minutes. 0 disables the cooldown entirely.
+    cooldown_minutes: int = 0
+
+    # ---- Short-side intraday trading ----
+    # Mirrors the 8-factor scorer for bearish setups. Disabled by default
+    # — opt in after paper-testing and after whitelisting symbols that
+    # allow intraday shorts on Upstox.
+    enable_shorts: bool = False
+    short_rsi_entry_low: float = 25.0
+    short_rsi_entry_high: float = 45.0
+    short_rsi_hard_block: float = 22.0   # RSI below this = too oversold to short
 
 
 class RiskCfg(BaseModel):

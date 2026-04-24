@@ -2,15 +2,23 @@
 <table>
   <thead>
     <tr>
-      <th>Symbol</th><th>Qty</th><th>Avg</th><th>LTP</th>
+      <th>Symbol</th><th>Side</th><th>Qty</th><th>Avg</th><th>LTP</th>
       <th>Stop</th><th>TP</th><th>Trail</th><th>P&amp;L</th><th>Opened</th>
     </tr>
   </thead>
   <tbody>
   {% for p in positions %}
+    {% set is_long = p.qty > 0 %}
     <tr>
       <td>{{ p.symbol }}</td>
-      <td>{{ p.qty }}</td>
+      <td>
+        {% if is_long %}
+          <span class="score-chip score-strong">▲ LONG</span>
+        {% else %}
+          <span class="score-chip" style="background: var(--bad-bg); color: var(--bad); border: 1px solid rgba(251,113,133,0.3);">▼ SHORT</span>
+        {% endif %}
+      </td>
+      <td>{{ p.qty|abs }}</td>
       <td>₹{{ "{:,.2f}".format(p.avg_price) }}</td>
       <td>₹{{ "{:,.2f}".format(p.ltp) }}</td>
       <td>{{ "₹{:,.2f}".format(p.stop_loss) if p.stop_loss is not none else "—" }}</td>

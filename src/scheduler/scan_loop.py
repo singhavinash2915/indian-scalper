@@ -68,7 +68,7 @@ from scheduler.market_hours import (
     now_ist,
 )
 from strategy import indicators as ind
-from strategy.scoring import MIN_LOOKBACK_BARS, score_symbol
+from strategy.scoring import MIN_LOOKBACK_BARS, score_symbol, score_symbol_short
 
 
 # ---------------------------------------------------------------- #
@@ -289,6 +289,26 @@ def run_tick(
             report.notes.append("kill_switch_set_by_drawdown")
         return report
 
+    # 7.5 Regime filter — probe the proxy once per tick, stash result on ctx.
+    ctx.regime_trending = True
+    ctx.regime_adx = 0.0
+    if ctx.settings.strategy.regime_filter_enabled:
+        from strategy.regime import probe_regime
+        snap = probe_regime(
+            fetcher=ctx.broker.fetcher,
+            proxy_symbol=ctx.settings.strategy.regime_filter_proxy_symbol,
+            interval=ctx.settings.strategy.candle_interval,
+            min_adx=ctx.settings.strategy.regime_filter_min_adx,
+        )
+        ctx.regime_trending = snap.trending
+        ctx.regime_adx = snap.adx
+        if not snap.trending:
+            logger.info(
+                "[{}] regime RANGING — {} (blocking new entries; exits still flow)",
+                trace_id, snap.reason,
+            )
+            report.notes.append(f"regime_ranging:{snap.reason}")
+
     # 8. Per-symbol evaluation.
     for sym in ctx.effective_universe():
         signal = _evaluate_symbol(ctx, sym, candles_by_symbol.get(sym), ts, trace_id)
@@ -366,32 +386,88 @@ def _evaluate_symbol(
         )
         return None
 
-    # Don't double up on an existing long.
-    if any(p.symbol == symbol and p.qty > 0 for p in ctx.broker.get_positions()):
+    # Don't double up on an existing position (long OR short) on this symbol.
+    if any(p.symbol == symbol and p.qty != 0 for p in ctx.broker.get_positions()):
         _record_snapshot(
             ctx, ts, symbol, 0, {}, "skipped_position_cap",
-            "already_long", trace_id, trade_mode_now,
+            "already_open", trace_id, trade_mode_now,
+        )
+        return None
+
+    # Per-symbol cooldown — respect recent stop_loss / trail_stop / time_stop.
+    if (
+        ctx.settings.strategy.cooldown_minutes > 0
+        and ctx.broker.store.is_symbol_in_cooldown(symbol, ts)
+    ):
+        until = ctx.broker.store.get_symbol_cooldown_until(symbol)
+        _record_snapshot(
+            ctx, ts, symbol, 0, {}, "skipped_filter",
+            f"cooldown_until_{until.strftime('%H:%M') if until else 'unknown'}",
+            trace_id, trade_mode_now,
+        )
+        return None
+
+    # Regime filter — is the broader market trending? Fail-open if we
+    # couldn't probe (scan loop records regime_snapshot on ctx at tick start).
+    if (
+        ctx.settings.strategy.regime_filter_enabled
+        and getattr(ctx, "regime_trending", True) is False
+    ):
+        _record_snapshot(
+            ctx, ts, symbol, 0, {}, "skipped_filter",
+            f"regime_ranging_{getattr(ctx, 'regime_adx', 0):.1f}adx",
+            trace_id, trade_mode_now,
         )
         return None
 
     df = _candles_to_df(candles)
-    score = score_symbol(df, ctx.settings.strategy)
+    long_score = score_symbol(df, ctx.settings.strategy)
+    short_score = (
+        score_symbol_short(df, ctx.settings.strategy)
+        if ctx.settings.strategy.enable_shorts else None
+    )
+
+    # Pick the winning side: whichever is ≥ min_score and higher total
+    # (and not hard-blocked). Long wins ties — Indian market is long-biased.
+    min_score = ctx.settings.strategy.min_score
+    chosen_side: Side | None = None
+    score = long_score   # default for logging / snapshot when nothing fires
+
+    long_ok = (not long_score.blocked) and long_score.total >= min_score
+    short_ok = short_score is not None and (not short_score.blocked) and short_score.total >= min_score
+
+    if long_ok and short_ok:
+        chosen_side = Side.BUY if long_score.total >= short_score.total else Side.SELL
+        score = long_score if chosen_side == Side.BUY else short_score
+    elif long_ok:
+        chosen_side = Side.BUY
+        score = long_score
+    elif short_ok:
+        chosen_side = Side.SELL
+        score = short_score
+
     breakdown = score.breakdown
 
-    if score.blocked:
-        logger.debug("[{}] {} blocked: {}", trace_id, symbol, score.block_reason)
-        _record_snapshot(
-            ctx, ts, symbol, score.total, breakdown, "skipped_filter",
-            score.block_reason or "hard_block", trace_id, trade_mode_now,
-        )
-        return None
-    if score.total < ctx.settings.strategy.min_score:
-        logger.debug("[{}] {} score {} < {}", trace_id, symbol, score.total, ctx.settings.strategy.min_score)
-        _record_snapshot(
-            ctx, ts, symbol, score.total, breakdown, "skipped_score",
-            f"score {score.total}/8 < min_score {ctx.settings.strategy.min_score}",
-            trace_id, trade_mode_now,
-        )
+    if chosen_side is None:
+        # Report the reason that's most informative (blocked > low score).
+        if long_score.blocked:
+            _record_snapshot(
+                ctx, ts, symbol, long_score.total, long_score.breakdown, "skipped_filter",
+                long_score.block_reason or "long_hard_block", trace_id, trade_mode_now,
+            )
+        elif short_score is not None and short_score.blocked:
+            _record_snapshot(
+                ctx, ts, symbol, short_score.total, short_score.breakdown, "skipped_filter",
+                short_score.block_reason or "short_hard_block", trace_id, trade_mode_now,
+            )
+        else:
+            best_total = max(long_score.total, short_score.total if short_score else 0)
+            side_tag = "short" if short_score and short_score.total > long_score.total else "long"
+            _record_snapshot(
+                ctx, ts, symbol, best_total, breakdown, "skipped_score",
+                f"{side_tag}={best_total}/8 < min_score {min_score}",
+                trace_id, trade_mode_now,
+            )
         return None
 
     # Position-count gate — symbol-specific because it depends on the
@@ -423,10 +499,10 @@ def _evaluate_symbol(
 
     entry = float(df["close"].iloc[-1])
     stop = atr_stop_price(
-        entry, atr, ctx.settings.risk.stop_atr_multiplier, Side.BUY,
+        entry, atr, ctx.settings.risk.stop_atr_multiplier, chosen_side,
     )
     tp = take_profit_price(
-        entry, atr, ctx.settings.risk.take_profit_atr_multiplier, Side.BUY,
+        entry, atr, ctx.settings.risk.take_profit_atr_multiplier, chosen_side,
     )
 
     inst = ctx.instruments.get(symbol)
@@ -468,25 +544,33 @@ def _evaluate_symbol(
         return None
 
     order = ctx.broker.place_order(
-        symbol, size.qty, Side.BUY, OrderType.MARKET,
+        symbol, size.qty, chosen_side, OrderType.MARKET,
         intent="entry", ts=ts,
     )
-    if order.status != "PENDING":
-        # Broker rejected — typically global trade_mode=watch_only.
+    # live_market fills flip status PENDING → FILLED in place_order; legacy
+    # next_candle_open leaves status=PENDING. Both are OK — only REJECTED*
+    # means the broker declined.
+    if order.status.startswith("REJECTED"):
         _record_snapshot(
             ctx, ts, symbol, score.total, breakdown, "watch_only_logged",
             f"broker_rejection: {order.status}", trace_id, trade_mode_now,
         )
         return None
 
-    ctx.pending_stops[order.id] = (stop, tp)
+    if order.status == "FILLED":
+        # live_market path: position already exists, attach stops now.
+        ctx.broker.set_position_stops(symbol, stop_loss=stop, take_profit=tp)
+    else:
+        # next_candle_open path: stops get attached when settle() yields.
+        ctx.pending_stops[order.id] = (stop, tp)
+    side_label = "BUY" if chosen_side == Side.BUY else "SHORT"
     _record_snapshot(
         ctx, ts, symbol, score.total, breakdown, "entered",
-        f"placed MARKET BUY qty={size.qty}", trace_id, trade_mode_now,
+        f"placed MARKET {side_label} qty={size.qty}", trace_id, trade_mode_now,
     )
     logger.info(
-        "[{}] SIGNAL {} qty={} entry={:.2f} stop={:.2f} tp={:.2f} score={}/8",
-        trace_id, symbol, size.qty, entry, stop, tp, score.total,
+        "[{}] SIGNAL {} {} qty={} entry={:.2f} stop={:.2f} tp={:.2f} score={}/8",
+        trace_id, symbol, side_label, size.qty, entry, stop, tp, score.total,
     )
     return SignalReport(
         symbol=symbol, score=score.total, qty=size.qty,
@@ -643,6 +727,23 @@ def _close_position(
         "[{}] EXIT {} reason={} qty={} order={}",
         trace_id, pos.symbol, reason, qty, order.id,
     )
+    # Cooldown: block re-entry on the same symbol for a configured window
+    # after a risk-triggered exit (stop / trail / time). EOD + kill-switch
+    # exits don't set a cooldown — they're market-wide events.
+    cool_min = int(getattr(ctx.settings.strategy, "cooldown_minutes", 0) or 0)
+    if cool_min > 0 and reason in {"stop_loss", "trail_stop", "time_stop"}:
+        from datetime import timedelta
+        until = (ts or now_ist()) + timedelta(minutes=cool_min)
+        try:
+            ctx.broker.store.set_symbol_cooldown(
+                pos.symbol, until=until, reason=reason,
+            )
+            logger.debug(
+                "[{}] cooldown set {} until {} ({})",
+                trace_id, pos.symbol, until.strftime("%H:%M"), reason,
+            )
+        except Exception as exc:
+            logger.warning("[{}] cooldown set failed for {}: {}", trace_id, pos.symbol, exc)
     return ExitReport(symbol=pos.symbol, reason=reason, order_id=order.id)
 
 

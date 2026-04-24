@@ -136,6 +136,13 @@ CREATE TABLE IF NOT EXISTS signal_snapshots (
 CREATE INDEX IF NOT EXISTS idx_signal_snapshots_ts ON signal_snapshots(ts);
 CREATE INDEX IF NOT EXISTS idx_signal_snapshots_symbol ON signal_snapshots(symbol);
 CREATE INDEX IF NOT EXISTS idx_signal_snapshots_action ON signal_snapshots(action);
+
+CREATE TABLE IF NOT EXISTS symbol_cooldown (
+    symbol TEXT PRIMARY KEY,
+    until_ts TEXT NOT NULL,
+    reason TEXT,
+    set_at TEXT NOT NULL
+);
 """
 
 
@@ -423,6 +430,52 @@ class StateStore:
     # ------------------------------------------------------------------ #
     # Operator audit (append-only) — operator control-plane actions.      #
     # Separate from ``audit_log`` which journals broker/order events.    #
+    # ------------------------------------------------------------------ #
+    # Per-symbol cooldown                                                 #
+    # ------------------------------------------------------------------ #
+
+    def set_symbol_cooldown(
+        self, symbol: str, until: datetime, reason: str | None = None,
+    ) -> None:
+        """Mark ``symbol`` as on cooldown until ``until``. Replaces any
+        existing cooldown row for the symbol."""
+        with self._conn() as c:
+            c.execute(
+                """
+                INSERT INTO symbol_cooldown(symbol, until_ts, reason, set_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    until_ts = excluded.until_ts,
+                    reason = excluded.reason,
+                    set_at = excluded.set_at
+                """,
+                (symbol, until.isoformat(), reason or "",
+                 datetime.now(IST).isoformat()),
+            )
+
+    def get_symbol_cooldown_until(self, symbol: str) -> datetime | None:
+        """Return the cooldown expiry for ``symbol``, or None if clear.
+        Automatically prunes the row when the cooldown has expired."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT until_ts FROM symbol_cooldown WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+        if row is None:
+            return None
+        until = datetime.fromisoformat(row["until_ts"])
+        if until <= datetime.now(IST):
+            with self._conn() as c:
+                c.execute("DELETE FROM symbol_cooldown WHERE symbol = ?", (symbol,))
+            return None
+        return until
+
+    def is_symbol_in_cooldown(self, symbol: str, now: datetime | None = None) -> bool:
+        until = self.get_symbol_cooldown_until(symbol)
+        if until is None:
+            return False
+        return (now or datetime.now(IST)) < until
+
     # ------------------------------------------------------------------ #
 
     def append_operator_audit(

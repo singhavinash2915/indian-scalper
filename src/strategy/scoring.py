@@ -270,3 +270,155 @@ def score_symbol(df: pd.DataFrame, cfg: StrategyCfg) -> Score:
         blocked=blocked,
         block_reason=block_reason,
     )
+
+
+# --------------------------------------------------------------------- #
+# Short-side (bearish) scorer — mirrors the 8 factors downward.          #
+# ADX + volume_surge are direction-agnostic and reused as-is.           #
+# --------------------------------------------------------------------- #
+
+def _check_ema_stack_bear(df: pd.DataFrame, cfg: StrategyCfg) -> FactorResult:
+    close = df["close"]
+    ema_fast = ind.ema(close, cfg.ema_fast).iloc[-1]
+    ema_mid = ind.ema(close, cfg.ema_mid).iloc[-1]
+    ema_slow = ind.ema(close, cfg.ema_slow).iloc[-1]
+    ema_trend = ind.ema(close, cfg.ema_trend).iloc[-1]
+    c = close.iloc[-1]
+    stacked = c < ema_fast < ema_mid < ema_slow and c < ema_trend
+    return FactorResult(
+        name="ema_stack",
+        passed=bool(stacked),
+        value=float(c),
+        note=(
+            f"close={c:.2f} ema{cfg.ema_fast}={ema_fast:.2f} "
+            f"ema{cfg.ema_mid}={ema_mid:.2f} ema{cfg.ema_slow}={ema_slow:.2f} "
+            f"ema{cfg.ema_trend}={ema_trend:.2f}"
+        ),
+    )
+
+
+def _check_vwap_cross_bear(df: pd.DataFrame, _cfg: StrategyCfg) -> FactorResult:
+    v = ind.vwap(df)
+    close = df["close"]
+    now_below = close.iloc[-1] < v.iloc[-1]
+    crossed = close.iloc[-2] >= v.iloc[-2]
+    passed = bool(now_below and crossed)
+    return FactorResult(
+        name="vwap_cross",
+        passed=passed,
+        value=float(v.iloc[-1]),
+        note=f"close={close.iloc[-1]:.2f} vwap={v.iloc[-1]:.2f}",
+    )
+
+
+def _check_macd_cross_bear(df: pd.DataFrame, _cfg: StrategyCfg) -> FactorResult:
+    m = ind.macd(df["close"])
+    hist_now = m["hist"].iloc[-1]
+    hist_prev = m["hist"].iloc[-2]
+    passed = bool(hist_prev >= 0 > hist_now)
+    return FactorResult(
+        name="macd_cross",
+        passed=passed,
+        value=float(hist_now),
+        note=f"hist_prev={hist_prev:.4f} hist_now={hist_now:.4f}",
+    )
+
+
+def _check_rsi_bear(df: pd.DataFrame, cfg: StrategyCfg) -> FactorResult:
+    r = ind.rsi(df["close"]).iloc[-1]
+    lo = cfg.short_rsi_entry_low
+    hi = cfg.short_rsi_entry_high
+    passed = bool(lo <= r <= hi)
+    return FactorResult(
+        name="rsi_entry",
+        passed=passed,
+        value=float(r),
+        note=f"rsi={r:.2f} short_range=[{lo}, {hi}]",
+    )
+
+
+def _check_bb_breakout_bear(df: pd.DataFrame, _cfg: StrategyCfg) -> FactorResult:
+    b = ind.bbands(df["close"], length=20, std=2.0)
+    bw = b["bandwidth"]
+    if len(bw.dropna()) < 20:
+        return FactorResult(
+            name="bb_breakout", passed=False, value=None,
+            note="insufficient bandwidth history",
+        )
+    bw_now = bw.iloc[-1]
+    window20 = bw.iloc[-20:]
+    squeeze_min = float(window20.min())
+    expansion_ratio = bw_now / squeeze_min if squeeze_min > 0 else 0.0
+    had_squeeze = expansion_ratio >= 1.5
+    bw_5_ago = bw.iloc[-6]
+    expanding = bw_now > bw_5_ago * 1.1
+    c = df["close"].iloc[-1]
+    below_mid = c < b["middle"].iloc[-1]
+    passed = bool(had_squeeze and expanding and below_mid)
+    return FactorResult(
+        name="bb_breakout",
+        passed=passed,
+        value=float(bw_now),
+        note=(
+            f"bw_now={bw_now:.2f} squeeze_min={squeeze_min:.2f} "
+            f"expansion={expansion_ratio:.2f}x expanding={expanding} below_mid={below_mid}"
+        ),
+    )
+
+
+def _check_supertrend_bear(df: pd.DataFrame, cfg: StrategyCfg) -> FactorResult:
+    s = ind.supertrend(
+        df["high"], df["low"], df["close"],
+        length=cfg.supertrend_period,
+        multiplier=cfg.supertrend_multiplier,
+    )
+    direction = s["direction"].iloc[-1]
+    line = s["line"].iloc[-1]
+    c = df["close"].iloc[-1]
+    passed = bool(direction == -1 and c < line)
+    return FactorResult(
+        name="supertrend",
+        passed=passed,
+        value=float(line) if pd.notna(line) else None,
+        note=f"direction={int(direction)} line={line:.2f} close={c:.2f}",
+    )
+
+
+_CHECKS_SHORT = (
+    _check_ema_stack_bear,
+    _check_vwap_cross_bear,
+    _check_macd_cross_bear,
+    _check_rsi_bear,
+    _check_adx,                 # direction-agnostic
+    _check_volume_surge,        # direction-agnostic
+    _check_bb_breakout_bear,
+    _check_supertrend_bear,
+)
+
+
+def score_symbol_short(df: pd.DataFrame, cfg: StrategyCfg) -> Score:
+    """Bearish 8-factor scorer. Same contract as ``score_symbol`` but for
+    short-side entries. Hard-blocks if RSI is below
+    ``cfg.short_rsi_hard_block`` (oversold — setting up for a bounce)."""
+    missing = REQUIRED_COLS - set(df.columns)
+    if missing:
+        raise ValueError(f"score_symbol_short: missing columns {sorted(missing)}")
+    if len(df) < MIN_LOOKBACK_BARS:
+        raise ValueError(
+            f"score_symbol_short: need >= {MIN_LOOKBACK_BARS} bars, got {len(df)}"
+        )
+
+    results = tuple(check(df, cfg) for check in _CHECKS_SHORT)
+    total = sum(1 for r in results if r.passed)
+
+    rsi_now = float(ind.rsi(df["close"]).iloc[-1])
+    blocked = rsi_now < cfg.short_rsi_hard_block
+    block_reason = (
+        f"rsi={rsi_now:.2f} < short_rsi_hard_block={cfg.short_rsi_hard_block}"
+        if blocked
+        else None
+    )
+    return Score(
+        total=total, results=results,
+        blocked=blocked, block_reason=block_reason,
+    )

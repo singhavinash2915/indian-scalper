@@ -5,14 +5,22 @@
   {% for p in positions %}
     {% set pnl = p.pnl %}
     <div style="padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+      {% set is_long = p.qty > 0 %}
       <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px;">
-        <div class="sym">{{ p.symbol }}</div>
+        <div style="display: flex; align-items: baseline; gap: 8px;">
+          <div class="sym">{{ p.symbol }}</div>
+          {% if is_long %}
+            <span style="font-size: 9.5px; letter-spacing: 0.1em; font-weight: 700; color: var(--good); background: var(--good-bg); border: 1px solid rgba(52,211,153,0.3); border-radius: 4px; padding: 1px 6px;">▲ LONG</span>
+          {% else %}
+            <span style="font-size: 9.5px; letter-spacing: 0.1em; font-weight: 700; color: var(--bad); background: var(--bad-bg); border: 1px solid rgba(251,113,133,0.3); border-radius: 4px; padding: 1px 6px;">▼ SHORT</span>
+          {% endif %}
+        </div>
         <div class="mono {{ 'good' if pnl >= 0 else 'bad' }}" style="font-weight: 700; font-size: 15px;">
           {{ "{:+,.0f}".format(pnl) }}
         </div>
       </div>
       <div class="mono" style="display: flex; justify-content: space-between; color: var(--muted); font-size: 11.5px; margin-top: 3px;">
-        <span>{{ p.qty }} @ ₹{{ "{:,.2f}".format(p.avg_price) }}</span>
+        <span>{{ p.qty|abs }} @ ₹{{ "{:,.2f}".format(p.avg_price) }}</span>
         <span>LTP ₹{{ "{:,.2f}".format(p.ltp) }}</span>
       </div>
       <div class="mono" style="display: flex; justify-content: space-between; color: var(--text-mute); font-size: 10.5px; margin-top: 3px;">
