@@ -143,6 +143,39 @@ CREATE TABLE IF NOT EXISTS symbol_cooldown (
     reason TEXT,
     set_at TEXT NOT NULL
 );
+
+-- Options positions live in their own table so the equity positions
+-- table stays simple. One row per open options leg.
+CREATE TABLE IF NOT EXISTS options_positions (
+    contract_key TEXT PRIMARY KEY,        -- trading_symbol e.g. NIFTY26MAY24500CE
+    underlying TEXT NOT NULL,             -- NIFTY | BANKNIFTY
+    option_type TEXT NOT NULL,            -- CE | PE
+    strike REAL NOT NULL,
+    expiry TEXT NOT NULL,
+    lot_size INTEGER NOT NULL,
+    qty_lots INTEGER NOT NULL,            -- positive integer
+    entry_premium REAL NOT NULL,
+    entry_spot REAL NOT NULL,             -- underlying spot at entry, for pts-based SL
+    high_water_premium REAL NOT NULL,     -- trailing-stop ratchet point
+    breakeven_locked INTEGER NOT NULL DEFAULT 0,    -- 0/1 — flips when 1:1 hit
+    opened_at TEXT NOT NULL,
+    last_premium REAL NOT NULL DEFAULT 0  -- cached for dashboard
+);
+
+-- Options orders mirror the equity orders ledger.
+CREATE TABLE IF NOT EXISTS options_orders (
+    id TEXT PRIMARY KEY,
+    contract_key TEXT NOT NULL,
+    underlying TEXT NOT NULL,
+    side TEXT NOT NULL,                   -- BUY | SELL (always BUY for entries)
+    qty_lots INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    avg_premium REAL NOT NULL DEFAULT 0,
+    intent TEXT NOT NULL,                 -- entry | exit
+    ts TEXT NOT NULL,
+    filled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_options_orders_contract ON options_orders(contract_key);
 """
 
 
@@ -430,6 +463,48 @@ class StateStore:
     # ------------------------------------------------------------------ #
     # Operator audit (append-only) — operator control-plane actions.      #
     # Separate from ``audit_log`` which journals broker/order events.    #
+    # ------------------------------------------------------------------ #
+    # Options positions + orders                                          #
+    # ------------------------------------------------------------------ #
+
+    def upsert_options_position(self, **fields: Any) -> None:
+        """Idempotent insert/update for an options position. Required keys:
+        contract_key, underlying, option_type, strike, expiry, lot_size,
+        qty_lots, entry_premium, entry_spot, high_water_premium,
+        breakeven_locked, opened_at, last_premium."""
+        cols = list(fields.keys())
+        placeholders = ",".join("?" * len(cols))
+        updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "contract_key")
+        sql = (
+            f"INSERT INTO options_positions({','.join(cols)}) VALUES({placeholders}) "
+            f"ON CONFLICT(contract_key) DO UPDATE SET {updates}"
+        )
+        with self._conn() as c:
+            c.execute(sql, [fields[k] for k in cols])
+
+    def delete_options_position(self, contract_key: str) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM options_positions WHERE contract_key = ?", (contract_key,))
+
+    def load_options_positions(self) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM options_positions").fetchall()
+        return [dict(r) for r in rows]
+
+    def append_options_order(self, **fields: Any) -> None:
+        cols = list(fields.keys())
+        placeholders = ",".join("?" * len(cols))
+        sql = f"INSERT INTO options_orders({','.join(cols)}) VALUES({placeholders})"
+        with self._conn() as c:
+            c.execute(sql, [fields[k] for k in cols])
+
+    def load_options_orders(self, limit: int = 100) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM options_orders ORDER BY ts DESC LIMIT ?", (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # ------------------------------------------------------------------ #
     # Per-symbol cooldown                                                 #
     # ------------------------------------------------------------------ #

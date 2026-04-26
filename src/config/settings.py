@@ -18,7 +18,8 @@ CONFIG_YAML_TEMPLATE = """\
 mode: paper                      # paper | live
 broker: paper                    # paper | upstox
 capital:
-  starting_inr: 500000           # ₹5 lakh paper capital
+  starting_inr: 500000           # ₹5L equity bucket
+  options_inr: 200000            # ₹2L options bucket (separate accounting)
   currency: INR
 
 market:
@@ -71,6 +72,21 @@ strategy:
   short_rsi_entry_low: 25
   short_rsi_entry_high: 45
   short_rsi_hard_block: 22
+  # ---- Options trading ----
+  options_enabled: false                       # flip true to activate
+  options_underlyings: [NIFTY, BANKNIFTY]
+  options_min_days_to_expiry: 7                # roll forward when < this
+  options_risk_per_trade_pct: 5.0              # 5% × options bucket per trade
+  options_premium_stop_pct: 35.0               # initial premium SL
+  options_premium_breakeven_pct: 35.0          # gain that triggers BE trail (1:1)
+  options_trailing_premium_pct: 30.0           # trail by 30% of high-water in phase 3
+  options_underlying_stop_pts_nifty: 50.0      # hard pts cap for NIFTY
+  options_underlying_stop_pts_banknifty: 125.0 # hard pts cap for BANKNIFTY
+  options_time_stop_minutes: 45
+  options_max_lots_per_signal: 1
+  options_premium_cap_per_lot: 35000           # skip if premium/lot exceeds
+  options_eod_squareoff: "15:05"               # earlier than equity 15:20
+
   # Earnings-calendar filter — see RUNBOOK §earnings.
   #   off | exclude | restrict_to
   earnings_filter: "off"
@@ -146,6 +162,7 @@ logging:
 
 class CapitalCfg(BaseModel):
     starting_inr: float
+    options_inr: float = 0.0   # separate bucket for F&O options trading
     currency: str = "INR"
 
 
@@ -192,6 +209,21 @@ class StrategyCfg(BaseModel):
     short_rsi_entry_low: float = 25.0
     short_rsi_entry_high: float = 45.0
     short_rsi_hard_block: float = 22.0   # RSI below this = too oversold to short
+
+    # ---- Options trading (NIFTY/BANKNIFTY · monthly · ATM · single-leg) ----
+    options_enabled: bool = False
+    options_underlyings: list[str] = Field(default_factory=lambda: ["NIFTY", "BANKNIFTY"])
+    options_min_days_to_expiry: int = 7         # roll forward when current expiry < this
+    options_risk_per_trade_pct: float = 5.0     # 5% × options bucket = max loss per trade
+    options_premium_stop_pct: float = 35.0      # initial premium SL
+    options_premium_breakeven_pct: float = 35.0 # gain at which trail flips to breakeven (1:1)
+    options_trailing_premium_pct: float = 30.0  # trail by 30% of high-water-mark in phase 3
+    options_underlying_stop_pts_nifty: float = 50.0
+    options_underlying_stop_pts_banknifty: float = 125.0
+    options_time_stop_minutes: int = 45
+    options_max_lots_per_signal: int = 1
+    options_premium_cap_per_lot: float = 35000.0   # skip signal if premium per lot exceeds
+    options_eod_squareoff: str = "15:05"        # earlier than equity 15:20
 
     # ---- Earnings-calendar filter ----
     # Restrict trading based on which symbols have results today.

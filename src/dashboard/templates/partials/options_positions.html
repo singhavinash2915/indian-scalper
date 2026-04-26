@@ -1,0 +1,54 @@
+{% if positions %}
+<table>
+  <thead>
+    <tr>
+      <th>Underlying</th><th>Side</th><th>Strike</th><th>Expiry</th>
+      <th class="cell-right">Lots</th>
+      <th class="cell-right">Entry ₹</th>
+      <th class="cell-right">Live ₹</th>
+      <th class="cell-right">High ₹</th>
+      <th>Phase</th>
+      <th class="cell-right">P&amp;L</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for p in positions %}
+    {% set is_call = p.option_type == "CE" %}
+    {% set pnl = p.pnl_rupees %}
+    {% set pnl_pct = p.pnl_pct %}
+    <tr>
+      <td>{{ p.underlying }}</td>
+      <td>
+        {% if is_call %}
+          <span class="score-chip score-strong">▲ CALL</span>
+        {% else %}
+          <span class="score-chip" style="background: var(--bad-bg); color: var(--bad); border: 1px solid rgba(251,113,133,0.3);">▼ PUT</span>
+        {% endif %}
+      </td>
+      <td>{{ "{:,.0f}".format(p.strike) }}</td>
+      <td>{{ p.expiry }}</td>
+      <td class="cell-right">{{ p.qty_lots }}</td>
+      <td class="cell-right">{{ "{:,.2f}".format(p.entry_premium) }}</td>
+      <td class="cell-right">{{ "{:,.2f}".format(p.last_premium) }}</td>
+      <td class="cell-right" style="color: var(--text-mute);">{{ "{:,.2f}".format(p.high_water_premium) }}</td>
+      <td>
+        {% if p.breakeven_locked %}
+          <span class="score-chip score-strong" title="trail above breakeven">🔒 BE+TRAIL</span>
+        {% else %}
+          <span class="score-chip score-mid" title="initial 35% / pts SL">PHASE 1</span>
+        {% endif %}
+      </td>
+      <td class="cell-right cell-pnl {{ 'good' if pnl >= 0 else 'bad' }}">
+        {{ "{:+,.0f}".format(pnl) }}
+        <span class="dim">{{ "{:+.1f}".format(pnl_pct) }}%</span>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<div class="dim mono" style="font-size: 10.5px; padding: 6px 12px; text-align: right;">
+  {{ positions|length }} open · refresh every 5s · EOD square-off 15:05 IST
+</div>
+{% else %}
+<div class="empty">No open options positions.</div>
+{% endif %}

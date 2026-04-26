@@ -71,6 +71,17 @@
   <div class="panel"><span class="empty">Loading KPIs…</span></div>
 </div>
 
+<!-- Options Positions — F&O on NIFTY/BANKNIFTY (only when options_enabled) -->
+<div class="panel" style="margin-top: 16px;">
+  <h2>Open Options · NIFTY / BANKNIFTY</h2>
+  <div id="options-positions"
+       hx-get="/partials/options_positions"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <span class="empty">Loading…</span>
+  </div>
+</div>
+
 <!-- Positions — moved ABOVE equity curve so you see what's live first -->
 <div class="panel" style="margin-top: 16px;">
   <h2>Open Positions</h2>

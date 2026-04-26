@@ -342,6 +342,177 @@ class PaperBroker(BrokerBase):
     def is_kill_switch_on(self) -> bool:
         return self.store.get_flag("kill_switch", "armed") == "tripped"
 
+    # ------------------------------------------------------------------ #
+    # Options-bucket trading (Phase 3.x)                                  #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def options_cash(self) -> float:
+        """Return cash remaining in the options bucket. Computed from the
+        configured starting amount minus net premium-spend on open
+        positions (which is just sum of entry premium notionals)."""
+        starting = float(self.settings.capital.options_inr or 0.0)
+        spent = sum(
+            p["entry_premium"] * p["lot_size"] * p["qty_lots"]
+            for p in self.store.load_options_positions()
+        )
+        # Add realised P&L from closed options trades (if any audit row exists).
+        realised = self.store.get_flag("options_realised_pnl", "0")
+        try:
+            realised_f = float(realised or 0)
+        except Exception:
+            realised_f = 0.0
+        return starting + realised_f - spent
+
+    def place_options_order(
+        self,
+        underlying: str,
+        option_type: str,           # CE | PE
+        spot_at_entry: float,
+        qty_lots: int = 1,
+        intent: str = "entry",
+        ts: datetime | None = None,
+    ) -> dict | None:
+        """Buy an ATM monthly option on the given underlying. Resolves the
+        contract from cache, fetches premium LTP from Upstox, fills
+        immediately at premium + slippage, persists to options_positions.
+
+        Returns the persisted position dict on success, None if the
+        signal had to be skipped (no contract / premium too high / no
+        cash).  Always-buy semantics — long calls or long puts only.
+        """
+        from data.options_chain import resolve_atm_option
+        from datetime import date as _date
+
+        ts = ts or datetime.now(IST)
+        cfg = self.settings.strategy
+        contract = resolve_atm_option(
+            db_path=self._db_path,
+            underlying=underlying,
+            side=option_type,
+            spot=spot_at_entry,
+            today=ts.date() if hasattr(ts, "date") else _date.today(),
+            min_days_to_expiry=cfg.options_min_days_to_expiry,
+        )
+        if contract is None:
+            logger.warning(
+                "options entry skipped — no contract: {} {} spot={}",
+                underlying, option_type, spot_at_entry,
+            )
+            return None
+
+        # Fetch premium LTP. Use a synthetic key built from the trading
+        # symbol — UpstoxFetcher.get_ltp_by_keys speaks raw instrument keys.
+        instrument_key = f"NSE_FO|{contract.trading_symbol}"
+        premium = 0.0
+        if hasattr(self.fetcher, "get_ltp_by_keys"):
+            try:
+                premiums = self.fetcher.get_ltp_by_keys([instrument_key])
+                # The response key is the trading_symbol per Upstox convention
+                premium = float(premiums.get(instrument_key) or 0.0)
+            except Exception as exc:
+                logger.warning("options premium fetch failed: {}", exc)
+        if premium <= 0:
+            # Fall back to a synthetic ATM premium estimate (~1.5% of spot)
+            # for paper-mode testing when live LTP isn't available.
+            premium = spot_at_entry * 0.015
+            logger.info(
+                "options entry using synthetic premium ₹{:.2f} (~1.5% of spot)",
+                premium,
+            )
+
+        # Premium-cap guard (per-lot ceiling).
+        per_lot_cost = premium * contract.lot_size
+        if per_lot_cost > cfg.options_premium_cap_per_lot:
+            logger.warning(
+                "options entry skipped — premium ₹{:.0f}/lot > cap ₹{:.0f}",
+                per_lot_cost, cfg.options_premium_cap_per_lot,
+            )
+            return None
+
+        # Bucket cash check.
+        slip = 1 + self.slippage_pct / 100.0   # buys pay slightly more
+        fill_premium = premium * slip
+        cost = fill_premium * contract.lot_size * qty_lots
+        if cost > self.options_cash + 1e-6:
+            logger.warning(
+                "options entry skipped — cost ₹{:.0f} > options bucket ₹{:.0f}",
+                cost, self.options_cash,
+            )
+            return None
+
+        # Persist position.
+        pos = {
+            "contract_key": contract.trading_symbol,
+            "underlying": underlying,
+            "option_type": option_type,
+            "strike": contract.strike,
+            "expiry": contract.expiry.isoformat(),
+            "lot_size": contract.lot_size,
+            "qty_lots": qty_lots,
+            "entry_premium": fill_premium,
+            "entry_spot": spot_at_entry,
+            "high_water_premium": fill_premium,
+            "breakeven_locked": 0,
+            "opened_at": ts.isoformat(),
+            "last_premium": fill_premium,
+        }
+        self.store.upsert_options_position(**pos)
+        order_id = f"opt_{contract.trading_symbol}_{int(ts.timestamp())}"
+        self.store.append_options_order(
+            id=order_id, contract_key=contract.trading_symbol,
+            underlying=underlying, side="BUY", qty_lots=qty_lots,
+            status="FILLED", avg_premium=fill_premium, intent=intent,
+            ts=ts.isoformat(), filled_at=ts.isoformat(),
+        )
+        logger.info(
+            "OPTIONS ENTRY {} {} {:.0f}{} qty={}lots premium=₹{:.2f} cost=₹{:,.0f}",
+            underlying, contract.expiry, contract.strike, option_type,
+            qty_lots, fill_premium, cost,
+        )
+        return pos
+
+    def close_options_position(
+        self,
+        contract_key: str,
+        exit_premium: float,
+        reason: str,
+        ts: datetime | None = None,
+    ) -> dict | None:
+        """Square off an options position. Records realised P&L to the
+        options bucket via the realised-pnl flag. Returns the closed
+        position (with realised_pnl filled in) or None if not open."""
+        ts = ts or datetime.now(IST)
+        positions = {p["contract_key"]: p for p in self.store.load_options_positions()}
+        pos = positions.get(contract_key)
+        if pos is None:
+            return None
+        slip = 1 - self.slippage_pct / 100.0   # sells receive slightly less
+        sell_premium = max(0.0, exit_premium * slip)
+        gross = (sell_premium - pos["entry_premium"]) * pos["lot_size"] * pos["qty_lots"]
+        # Update realised pnl flag.
+        prev_pnl = float(self.store.get_flag("options_realised_pnl", "0") or 0)
+        self.store.set_flag(
+            "options_realised_pnl", f"{prev_pnl + gross:.4f}", actor="options_close",
+        )
+        order_id = f"opt_x_{contract_key}_{int(ts.timestamp())}"
+        self.store.append_options_order(
+            id=order_id, contract_key=contract_key,
+            underlying=pos["underlying"], side="SELL", qty_lots=pos["qty_lots"],
+            status="FILLED", avg_premium=sell_premium, intent=f"exit:{reason}",
+            ts=ts.isoformat(), filled_at=ts.isoformat(),
+        )
+        self.store.delete_options_position(contract_key)
+        logger.info(
+            "OPTIONS EXIT {} reason={} premium=₹{:.2f} → ₹{:.2f} pnl=₹{:+,.0f}",
+            contract_key, reason, pos["entry_premium"], sell_premium, gross,
+        )
+        return {**pos, "exit_premium": sell_premium, "realised_pnl": gross,
+                "exit_reason": reason, "closed_at": ts.isoformat()}
+
+    def get_options_positions(self) -> list[dict]:
+        return self.store.load_options_positions()
+
 
 def _default_fetcher(
     settings: Settings, instruments: InstrumentMaster | None = None,

@@ -328,6 +328,19 @@ def run_tick(
         if signal:
             report.signals.append(signal)
 
+    # 9. Options track — runs in parallel with equity. Disabled by default.
+    if ctx.settings.strategy.options_enabled:
+        try:
+            opt_exits = _manage_options_positions(ctx, ts, trace_id)
+            report.exits.extend(opt_exits)
+        except Exception as exc:
+            logger.error("[{}] options manage failed: {}", trace_id, exc)
+        try:
+            opt_signals = _evaluate_options_underlyings(ctx, ts, trace_id)
+            report.signals.extend(opt_signals)
+        except Exception as exc:
+            logger.error("[{}] options eval failed: {}", trace_id, exc)
+
     return report
 
 
@@ -735,6 +748,171 @@ def _exit_triggered(pos: Position, candle) -> str | None:
         if pos.take_profit is not None and candle.low <= pos.take_profit:
             return "take_profit"
     return None
+
+
+def _evaluate_options_underlyings(
+    ctx: "ScanContext", ts: datetime, trace_id: str,
+) -> list[SignalReport]:
+    """Score NIFTY + BANKNIFTY 15m candles via the existing scorer + place
+    ATM CE/PE orders when score ≥ min_score on either side."""
+    cfg = ctx.settings.strategy
+    out: list[SignalReport] = []
+    if not getattr(cfg, "options_enabled", False):
+        return out
+
+    open_positions = ctx.broker.get_options_positions()
+    fno_cap = ctx.settings.risk.max_fno_positions
+    interval = cfg.candle_interval
+
+    for underlying in cfg.options_underlyings:
+        if any(p["underlying"] == underlying for p in open_positions):
+            continue   # already long an option on this underlying
+        if len(open_positions) >= fno_cap:
+            break
+        try:
+            candles = ctx.broker.fetcher.get_candles(
+                underlying, interval, lookback=120,
+            )
+        except Exception as exc:
+            logger.warning("[{}] options fetch {} failed: {}", trace_id, underlying, exc)
+            continue
+        if not candles or len(candles) < MIN_LOOKBACK_BARS:
+            continue
+        df = _candles_to_df(candles)
+        long_s = score_symbol(df, cfg)
+        short_s = score_symbol_short(df, cfg)
+        opt_type = None
+        chosen_score = 0
+        if long_s.total >= cfg.min_score and not long_s.blocked:
+            opt_type = "CE"
+            chosen_score = long_s.total
+        if short_s.total >= cfg.min_score and not short_s.blocked:
+            if opt_type is None or short_s.total > long_s.total:
+                opt_type = "PE"
+                chosen_score = short_s.total
+        if opt_type is None:
+            continue
+        spot = float(df["close"].iloc[-1])
+        pos = ctx.broker.place_options_order(
+            underlying=underlying,
+            option_type=opt_type,
+            spot_at_entry=spot,
+            qty_lots=cfg.options_max_lots_per_signal,
+            ts=ts,
+        )
+        if pos is None:
+            continue
+        open_positions.append(pos)
+        out.append(SignalReport(
+            symbol=f"{underlying}-{opt_type}", score=chosen_score,
+            qty=pos["qty_lots"], entry=pos["entry_premium"],
+            stop=pos["entry_premium"] * (1 - cfg.options_premium_stop_pct / 100.0),
+            take_profit=0.0,   # no hard TP — trailing stop catches winners
+            order_id=pos["contract_key"],
+        ))
+        logger.info(
+            "[{}] OPTIONS SIGNAL {} {} score={}/8 qty={} premium=₹{:.2f}",
+            trace_id, underlying, opt_type, chosen_score,
+            pos["qty_lots"], pos["entry_premium"],
+        )
+    return out
+
+
+def _manage_options_positions(
+    ctx: "ScanContext", ts: datetime, trace_id: str,
+) -> list[ExitReport]:
+    """Apply the 5-stop ladder + breakeven trail to every open options
+    position. Persists updated high_water + breakeven flags + closes on
+    triggered stops."""
+    from risk.options_stops import (
+        check_options_exit,
+        update_high_water_and_breakeven,
+    )
+
+    cfg = ctx.settings.strategy
+    exits: list[ExitReport] = []
+    positions = ctx.broker.get_options_positions()
+    if not positions:
+        return exits
+
+    fetcher = ctx.broker.fetcher
+    if not hasattr(fetcher, "get_ltp_by_keys"):
+        return exits   # backtest fetcher — skip
+
+    # Batch fetch: option premiums + underlying spots in one Upstox call.
+    keys: list[str] = []
+    for p in positions:
+        keys.append(f"NSE_FO|{p['contract_key']}")
+    for u in {p["underlying"] for p in positions}:
+        # underlying spot key — UpstoxFetcher knows the index keys.
+        from data.market_data import UpstoxFetcher
+        spot_key = UpstoxFetcher._INDEX_KEYS.get(u)
+        if spot_key:
+            keys.append(spot_key)
+    try:
+        ltps = fetcher.get_ltp_by_keys(keys)
+    except Exception as exc:
+        logger.warning("[{}] options LTP fetch failed: {}", trace_id, exc)
+        return exits
+
+    # Index spot lookup map (Upstox returns keys like "NSE_INDEX:Nifty 50").
+    def _spot_for(underlying: str) -> float:
+        from data.market_data import UpstoxFetcher
+        key = UpstoxFetcher._INDEX_KEYS.get(underlying, "")
+        # Try direct key first, then fall back to scanning ltps for prefix match.
+        if key in ltps:
+            return ltps[key]
+        for k, v in ltps.items():
+            if underlying.replace("BANKNIFTY", "Nifty Bank").replace("NIFTY", "Nifty 50") in k:
+                return v
+        return 0.0
+
+    for pos in positions:
+        ck = pos["contract_key"]
+        opt_key = f"NSE_FO|{ck}"
+        # Premium lookup — Upstox response key includes the trading symbol.
+        premium = 0.0
+        for k, v in ltps.items():
+            if ck in k or k == opt_key:
+                premium = float(v)
+                break
+        if premium <= 0:
+            continue   # no live premium → skip this position this tick
+        spot = _spot_for(pos["underlying"])
+        if spot <= 0:
+            spot = pos["entry_spot"]   # fallback — disables underlying-pts check
+
+        # Update high-water + breakeven flag, persist before exit check.
+        new_high, new_be = update_high_water_and_breakeven(pos, premium, cfg)
+        if new_high != pos.get("high_water_premium") or bool(new_be) != bool(pos.get("breakeven_locked", 0)):
+            ctx.broker.store.upsert_options_position(
+                **{**pos, "high_water_premium": new_high,
+                   "breakeven_locked": int(new_be), "last_premium": premium},
+            )
+            pos["high_water_premium"] = new_high
+            pos["breakeven_locked"] = int(new_be)
+
+        decision = check_options_exit(pos, premium, spot, ts, cfg)
+        if decision is None:
+            # Just persist the latest premium for the dashboard.
+            ctx.broker.store.upsert_options_position(
+                **{**pos, "last_premium": premium},
+            )
+            continue
+
+        ctx.broker.close_options_position(
+            ck, exit_premium=decision.sell_premium,
+            reason=decision.reason, ts=ts,
+        )
+        logger.info(
+            "[{}] OPTIONS EXIT {} reason={} {}",
+            trace_id, ck, decision.reason, decision.note,
+        )
+        exits.append(ExitReport(
+            symbol=ck, reason=f"options:{decision.reason}",
+            order_id=ck,
+        ))
+    return exits
 
 
 def _close_position(

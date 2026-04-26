@@ -224,7 +224,17 @@ class UpstoxFetcher:
 
     # -- key resolution ------------------------------------------------- #
 
+    # Hardcoded index instrument keys — used by the options stack to
+    # fetch NIFTY/BANKNIFTY 15m candles + spot LTP. Stable for years.
+    _INDEX_KEYS = {
+        "NIFTY": "NSE_INDEX|Nifty 50",
+        "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+    }
+
     def _instrument_key(self, symbol: str) -> str:
+        # Special-case indices first — their keys aren't in the instruments DB.
+        if symbol in self._INDEX_KEYS:
+            return self._INDEX_KEYS[symbol]
         if self.instruments is None:
             raise RuntimeError("UpstoxFetcher requires InstrumentMaster for symbol→ISIN lookup")
         # Instrument dataclass doesn't expose isin; read it directly from the
@@ -277,6 +287,29 @@ class UpstoxFetcher:
         return self._http_get(url).get("data", {}).get("candles", [])
 
     # -- public API ----------------------------------------------------- #
+
+    def get_ltp_by_keys(self, instrument_keys: list[str]) -> dict[str, float]:
+        """Real-time LTP for arbitrary Upstox instrument keys (any segment).
+
+        Used by the options stack: keys come in as ``NSE_FO|<token>``
+        (option contracts) or ``NSE_INDEX|Nifty 50`` (index spot).
+        Returns ``{instrument_key: last_price}``. Fail-open returns {}.
+        """
+        if not instrument_keys:
+            return {}
+        url = f"{self.base_url}/market-quote/ltp"
+        params = {"instrument_key": ",".join(instrument_keys)}
+        try:
+            data = self._http_get(url, params=params).get("data", {})
+        except Exception as exc:
+            logger.warning("UpstoxFetcher get_ltp_by_keys failed: {}", exc)
+            return {}
+        out: dict[str, float] = {}
+        for _resp_key, payload in data.items():
+            tok = payload.get("instrument_token", "")
+            if tok:
+                out[tok] = float(payload.get("last_price", 0.0))
+        return out
 
     def get_ltp(self, symbols: list[str]) -> dict[str, float]:
         """Batched real-time LTP fetch. Returns ``{symbol: last_price}``.

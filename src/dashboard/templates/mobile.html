@@ -238,6 +238,17 @@
     <div class="empty">Loading…</div>
   </div>
 
+  <!-- Options positions (NIFTY/BANKNIFTY) — only renders when options_enabled fires -->
+  <div class="card">
+    <h2>Options · NIFTY / BANKNIFTY</h2>
+    <div id="mobile-options"
+         hx-get="/partials/options_positions"
+         hx-trigger="load, every 5s"
+         hx-swap="innerHTML">
+      <div class="empty">Loading…</div>
+    </div>
+  </div>
+
   <!-- Open positions — surfaced above controls so the live book is always visible first -->
   <div class="card">
     <h2>Open Positions</h2>

@@ -333,6 +333,30 @@ def create_app(
             request, "mobile_signals.html", {"rows": rows},
         )
 
+    @app.get("/partials/options_positions", response_class=HTMLResponse)
+    def options_positions_partial(request: Request) -> HTMLResponse:
+        # Live LTP refresh on each render — same TTL cache as equity.
+        try:
+            state.broker.refresh_live_ltp()
+        except Exception:
+            pass
+        rows = state.broker.get_options_positions() if hasattr(state.broker, "get_options_positions") else []
+        enriched = []
+        for p in rows:
+            entry = float(p["entry_premium"])
+            live = float(p.get("last_premium", entry))
+            lot = int(p["lot_size"]) * int(p["qty_lots"])
+            pnl_rupees = (live - entry) * lot
+            pnl_pct = ((live - entry) / entry * 100.0) if entry else 0.0
+            enriched.append({
+                **p,
+                "pnl_rupees": pnl_rupees,
+                "pnl_pct": pnl_pct,
+            })
+        return templates.TemplateResponse(
+            request, "partials/options_positions.html", {"positions": enriched},
+        )
+
     @app.get("/m/partials/positions", response_class=HTMLResponse)
     def mobile_positions_partial(request: Request) -> HTMLResponse:
         # Live-refresh LTP before rendering so P&L updates on each tick.
