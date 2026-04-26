@@ -170,8 +170,15 @@ def run_tick(
 
     # D14 — refresh NIFTY+BANKNIFTY options chain once per IST day so the
     # bot always has current expiry/strike/lot_size data when an options
-    # signal fires. Same kv-guard pattern as signal pruning.
-    if getattr(ctx.settings.strategy, "options_enabled", False):
+    # signal fires. Same kv-guard pattern as signal pruning. Skipped in
+    # backtest mode (BacktestCandleFetcher detected) — historical replay
+    # doesn't need a fresh chain.
+    fetcher_name = type(getattr(ctx.broker, "fetcher", None)).__name__
+    is_backtest = "Backtest" in fetcher_name or "Fake" in fetcher_name
+    if (
+        not is_backtest
+        and getattr(ctx.settings.strategy, "options_enabled", False)
+    ):
         _refresh_options_master_once_daily(ctx, ts, trace_id)
 
     # 1. Kill switch (emergency override).
