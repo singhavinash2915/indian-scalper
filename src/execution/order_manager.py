@@ -189,7 +189,14 @@ class OrderManager:
             fill_price = self._resolve_fill_price(order, candle)
             if fill_price is None:
                 continue
-            filled.append(self._fill(order, fill_price, candle.ts))
+            try:
+                filled.append(self._fill(order, fill_price, candle.ts))
+            except InsufficientFundsError as exc:
+                # _fill already wrote REJECTED + audit row; log and skip
+                # so other orders for this symbol still get a chance.
+                from loguru import logger
+                logger.warning("settle skip {} ({})", order.symbol, exc)
+                continue
         return filled
 
     def _resolve_fill_price(self, order: Order, candle: Candle) -> float | None:
