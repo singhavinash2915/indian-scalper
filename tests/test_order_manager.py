@@ -169,9 +169,11 @@ def test_modify_rejects_unknown_fields(tmp_path: Path) -> None:
 def test_buy_with_insufficient_cash_is_rejected(tmp_path: Path) -> None:
     om = _om(tmp_path, cash=1_000.0)
     om.submit("RELIANCE", 100, Side.BUY, OrderType.MARKET, ts=T0)
-    with pytest.raises(InsufficientFundsError):
-        om.settle_on_candle("RELIANCE", _candle(T0, 1000, 1005, 995, 1000))
-    # Cash untouched, no position opened.
+    # settle_on_candle catches per-order rejections so a single
+    # InsufficientFunds doesn't abort settlement of other PENDING orders.
+    filled = om.settle_on_candle("RELIANCE", _candle(T0, 1000, 1005, 995, 1000))
+    assert filled == []
+    # Cash untouched, no position opened, order recorded as REJECTED.
     assert om.cash == 1_000.0
     assert om.positions == {}
 
