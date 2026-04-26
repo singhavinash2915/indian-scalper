@@ -160,24 +160,23 @@ def run_walk_forward(cfg: WalkForwardConfig) -> BacktestResult:
                 cur.fetchall(),
             )
     universe = UniverseRegistry(broker.store, instruments=instruments)
+    enabled_symbols: list[str] = []
     for sym in cfg.symbols:
         if sym in ("NIFTY", "BANKNIFTY"):
             continue   # indices traded via options stack, not equity universe
         try:
-            universe.add(symbol=sym, segment="EQ", enabled=True, actor="backtest")
-        except Exception:
-            # Symbol may already exist if we copied from live — toggle it on.
-            try:
-                universe.set_enabled(sym, True, actor="backtest")
-            except Exception as exc:
-                logger.warning("backtest universe add {}: {}", sym, exc)
+            universe.add(symbol=sym, segment="EQ", actor="backtest")
+            enabled_symbols.append(sym)
+        except Exception as exc:
+            logger.warning("backtest universe add {}: {}", sym, exc)
 
     ctx = ScanContext(
-        broker=broker, settings=settings,
+        settings=settings,
+        broker=broker,
+        universe=enabled_symbols,
         instruments=instruments,
         universe_registry=universe,
         calendar=None,
-        pending_stops={},
     )
 
     # 6. Run.
