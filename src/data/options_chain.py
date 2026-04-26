@@ -50,6 +50,16 @@ STRIKE_STEP = {
 # Data classes                                                          #
 # --------------------------------------------------------------------- #
 
+def _parse_expiry(raw: object) -> date:
+    """Upstox returns expiry as either ISO 'YYYY-MM-DD' (current API)
+    or epoch-ms (older docs). Handle both gracefully."""
+    if isinstance(raw, str):
+        return date.fromisoformat(raw[:10])
+    if isinstance(raw, (int, float)):
+        return datetime.fromtimestamp(int(raw) / 1000).date()
+    raise ValueError(f"unparseable expiry: {raw!r}")
+
+
 @dataclass(frozen=True)
 class OptionContract:
     """One row from the NFO master (or our SQLite cache)."""
@@ -106,13 +116,13 @@ def refresh_options_master(
             ot = raw.get("instrument_type")
             if ot not in ("CE", "PE"):
                 continue
-            exp_ms = raw.get("expiry")
-            if not exp_ms:
+            exp_raw = raw.get("expiry")
+            if not exp_raw:
                 continue
             contracts.append(OptionContract(
                 instrument_key=raw.get("instrument_key", ""),
                 underlying=underlying,
-                expiry=datetime.fromtimestamp(int(exp_ms) / 1000).date(),
+                expiry=_parse_expiry(exp_raw),
                 strike=float(raw.get("strike_price", 0)),
                 option_type=ot,
                 lot_size=int(raw.get("lot_size", 0) or 0),
@@ -198,9 +208,12 @@ def get_monthly_expiry(
 
     raw_expiries: set[date] = set()
     for c in r.json().get("data", []):
-        ms = c.get("expiry")
-        if ms:
-            raw_expiries.add(datetime.fromtimestamp(int(ms) / 1000).date())
+        v = c.get("expiry")
+        if v:
+            try:
+                raw_expiries.add(_parse_expiry(v))
+            except Exception:
+                continue
     if not raw_expiries:
         return None
 
