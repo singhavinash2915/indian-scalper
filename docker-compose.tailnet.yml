@@ -73,7 +73,10 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config.yaml:/app/config.yaml:rw
-      - ./.env:/app/.env:ro
+      # rw because /auth/upstox/callback rewrites this file in place when
+      # the token gets refreshed via the web flow. Other secrets in here
+      # are unchanged — _write_dotenv preserves comments + ordering.
+      - ./.env:/app/.env:rw
     environment:
       - TZ=Asia/Kolkata
       # 0.0.0.0 is safe here: the only interface that exists in the
