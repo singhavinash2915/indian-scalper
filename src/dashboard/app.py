@@ -1044,10 +1044,38 @@ def _kpis_context(state: DashboardState) -> dict:
         else:
             fno_open += 1
 
+    # ---- Options bucket: separate accounting ----
+    options_starting = float(settings.capital.options_inr or 0)
+    options_positions = (
+        broker.get_options_positions()
+        if hasattr(broker, "get_options_positions") else []
+    )
+    options_realised = 0.0
+    try:
+        options_realised = float(broker.store.get_flag("options_realised_pnl", "0") or 0)
+    except Exception:
+        pass
+    # Mark-to-market open options legs vs current premium.
+    options_unrealised = 0.0
+    options_premium_in_play = 0.0
+    for op in options_positions:
+        entry = float(op["entry_premium"])
+        last = float(op.get("last_premium", entry))
+        lot = int(op["lot_size"]) * int(op["qty_lots"])
+        options_unrealised += (last - entry) * lot
+        options_premium_in_play += entry * lot
+    options_cash = options_starting + options_realised - options_premium_in_play
+    options_equity = options_cash + options_premium_in_play + options_unrealised
+    options_total_pnl = options_realised + options_unrealised
+    options_total_pnl_pct = (
+        (options_total_pnl / options_starting * 100.0) if options_starting else 0.0
+    )
+
     return {
         "mode": settings.mode,
         "broker_name": settings.broker,
         "trade_mode": current_trade_mode(broker.store),
+        # Equity bucket
         "equity": funds["equity"],
         "cash": funds["available"],
         "used": funds["used"],
@@ -1059,6 +1087,17 @@ def _kpis_context(state: DashboardState) -> dict:
         "peak_equity": peak,
         "eq_open": eq_open,
         "eq_max": settings.risk.max_equity_positions,
+        # Options bucket (Phase 3)
+        "options_enabled": getattr(settings.strategy, "options_enabled", False),
+        "options_starting": options_starting,
+        "options_equity": options_equity,
+        "options_cash": options_cash,
+        "options_premium_in_play": options_premium_in_play,
+        "options_unrealised": options_unrealised,
+        "options_realised": options_realised,
+        "options_total_pnl": options_total_pnl,
+        "options_total_pnl_pct": options_total_pnl_pct,
+        "options_open": len(options_positions),
         "fno_open": fno_open,
         "fno_max": settings.risk.max_fno_positions,
         "kill_switch": broker.is_kill_switch_on(),

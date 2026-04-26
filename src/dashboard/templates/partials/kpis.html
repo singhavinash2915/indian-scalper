@@ -1,13 +1,19 @@
-{# KPI tiles — polled from /partials/kpis. Self-contained grid. #}
+{# KPI tiles — two bucket sections (Equity + F&O), polled every 5s. #}
+
+{# ───────────── EQUITY BUCKET ───────────── #}
+<div class="bucket-header">
+  <span class="bucket-name">Equity</span>
+  <span class="bucket-sub">₹{{ "{:,.0f}".format(starting) }} bucket  ·  Nifty 100  ·  {{ eq_max }} slots</span>
+</div>
 <div class="grid kpis">
   <div class="panel kpi">
-    <h2>Equity</h2>
+    <h2>Equity Now</h2>
     <div class="value">₹{{ "{:,.0f}".format(equity) }}</div>
     <div class="sub">
-      vs start ₹{{ "{:,.0f}".format(starting) }}
       <span class="{{ 'good' if total_pnl >= 0 else 'bad' }}">
-        ({{ "{:+.2f}".format(total_pnl_pct) }}%)
+        {{ "{:+.2f}".format(total_pnl_pct) }}%
       </span>
+      vs start
     </div>
   </div>
   <div class="panel kpi">
@@ -24,13 +30,55 @@
   </div>
   <div class="panel kpi">
     <h2>Positions</h2>
-    <div class="value">{{ eq_open }}/{{ eq_max }} eq · {{ fno_open }}/{{ fno_max }} F&amp;O</div>
-    <div class="sub">caps from config.risk</div>
+    <div class="value">{{ eq_open }} / {{ eq_max }}</div>
+    <div class="sub">stocks · equal-bucket sizing</div>
   </div>
   <div class="panel kpi">
     <h2>Peak Equity</h2>
     <div class="value">₹{{ "{:,.0f}".format(peak_equity) }}</div>
     <div class="sub">all-time watermark</div>
+  </div>
+</div>
+
+{# ───────────── F&O BUCKET ───────────── #}
+<div class="bucket-header" style="margin-top: 18px;">
+  <span class="bucket-name">F&amp;O Options</span>
+  <span class="bucket-sub">
+    ₹{{ "{:,.0f}".format(options_starting) }} bucket  ·  NIFTY/BANKNIFTY ATM monthly  ·
+    {{ fno_max }} slots  ·
+    {% if options_enabled %}<span class="good">ACTIVE</span>{% else %}<span class="warn">DORMANT</span>{% endif %}
+  </span>
+</div>
+<div class="grid kpis">
+  <div class="panel kpi">
+    <h2>Bucket Value</h2>
+    <div class="value">₹{{ "{:,.0f}".format(options_equity) }}</div>
+    <div class="sub">
+      <span class="{{ 'good' if options_total_pnl >= 0 else 'bad' }}">
+        {{ "{:+.2f}".format(options_total_pnl_pct) }}%
+      </span>
+      vs start
+    </div>
+  </div>
+  <div class="panel kpi">
+    <h2>Cash</h2>
+    <div class="value">₹{{ "{:,.0f}".format(options_cash) }}</div>
+    <div class="sub">premium in play ₹{{ "{:,.0f}".format(options_premium_in_play) }}</div>
+  </div>
+  <div class="panel kpi">
+    <h2>Total P&amp;L</h2>
+    <div class="value {{ 'good' if options_total_pnl >= 0 else 'bad' }}">
+      {{ "{:+,.0f}".format(options_total_pnl) }}
+    </div>
+    <div class="sub">
+      realised {{ "{:+,.0f}".format(options_realised) }}
+      · open {{ "{:+,.0f}".format(options_unrealised) }}
+    </div>
+  </div>
+  <div class="panel kpi">
+    <h2>Open Legs</h2>
+    <div class="value">{{ options_open }} / {{ fno_max }}</div>
+    <div class="sub">CE + PE combined</div>
   </div>
   <div class="panel kpi">
     <h2>Kill Switch</h2>
@@ -38,9 +86,8 @@
       {{ "TRIPPED" if kill_switch else "ARMED" }}
     </div>
     <div class="sub">
-      {% if kill_switch %}scheduler stopped; rearm + resume to restart
-      {% else %}ready to halt{% endif %}
-      · broker {{ broker_name }}
+      {% if kill_switch %}rearm + resume to restart
+      {% else %}ready to halt · broker {{ broker_name }}{% endif %}
     </div>
   </div>
 </div>

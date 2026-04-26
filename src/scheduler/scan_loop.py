@@ -168,6 +168,12 @@ def run_tick(
     # once per calendar day (kv-guarded so we don't DELETE every tick).
     _prune_signals_once_daily(store, ts, trace_id)
 
+    # D14 — refresh NIFTY+BANKNIFTY options chain once per IST day so the
+    # bot always has current expiry/strike/lot_size data when an options
+    # signal fires. Same kv-guard pattern as signal pruning.
+    if getattr(ctx.settings.strategy, "options_enabled", False):
+        _refresh_options_master_once_daily(ctx, ts, trace_id)
+
     # 1. Kill switch (emergency override).
     #    Kill is MORE than a skip: square off every open position with
     #    ``intent="exit"`` (bypassing trade_mode watch_only since exits
@@ -347,6 +353,28 @@ def run_tick(
 # ---------------------------------------------------------------- #
 # Internals                                                         #
 # ---------------------------------------------------------------- #
+
+def _refresh_options_master_once_daily(ctx, ts: datetime, trace_id: str) -> None:
+    """Refresh NIFTY+BANKNIFTY option contracts once per IST day. Cheap
+    HTTP call to Upstox; persisted into the existing ``instruments``
+    table. Survives restarts via the ``last_options_refresh_date`` flag."""
+    store = ctx.broker.store
+    today = ts.astimezone(IST).date().isoformat() if ts.tzinfo else ts.date().isoformat()
+    last = store.get_flag("last_options_refresh_date")
+    if last == today:
+        return
+    try:
+        from data.options_chain import refresh_options_master
+        n = refresh_options_master(
+            db_path=store._db_path,
+            underlyings=list(ctx.settings.strategy.options_underlyings),
+        )
+        store.set_flag("last_options_refresh_date", today, actor="scheduler")
+        if n:
+            logger.info("[{}] NFO master refresh: cached {} contracts", trace_id, n)
+    except Exception as exc:
+        logger.warning("[{}] options master refresh failed: {}", trace_id, exc)
+
 
 def _prune_signals_once_daily(store, ts: datetime, trace_id: str) -> None:
     """Guard: only run the DELETE once per IST calendar day. Uses a

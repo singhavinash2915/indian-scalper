@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Indian Scalper — Dashboard</title>
+<title>The Trend Spider — Dashboard</title>
 
 <!-- HTMX for partial refreshes -->
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
@@ -173,6 +173,25 @@
     content: ''; width: 3px; height: 13px;
     background: var(--grad-amber); border-radius: 2px;
   }
+
+  /* ---- Bucket section header (Equity / F&O) ---- */
+  .bucket-header {
+    display: flex; align-items: baseline; gap: 14px;
+    padding: 4px 4px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  .bucket-name {
+    font-size: 14px; font-weight: 700; color: var(--fg);
+    letter-spacing: -0.01em;
+  }
+  .bucket-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; color: var(--text-mute);
+    letter-spacing: 0.05em;
+  }
+  .bucket-sub .good { color: var(--good); font-weight: 600; }
+  .bucket-sub .warn { color: var(--warn); font-weight: 600; }
 
   /* ---- KPI cards ---- */
   .kpi {
@@ -462,7 +481,7 @@
   <div class="brand">
     <div class="brand-mark">₹</div>
     <div>
-      <h1>Indian <span style="opacity:0.35;font-weight:300;">/</span> Scalper</h1>
+      <h1>The <span style="opacity:0.35;font-weight:300;">/</span> Trend Spider</h1>
       <div class="brand-sub">Momentum · 15m · Nifty 100</div>
     </div>
   </div>

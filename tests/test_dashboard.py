@@ -430,7 +430,7 @@ def test_mobile_home_renders(client: TestClient) -> None:
     assert r.status_code == 200
     html = r.text
     # Banner + overview poll target + controls + kill sheet.
-    assert "Scalper" in html
+    assert "Trend Spider" in html   # rebrand 2026-04-26
     assert 'id="overview"' in html
     assert 'data-action="kill"' in html
     assert 'id="kill-sheet"' in html
