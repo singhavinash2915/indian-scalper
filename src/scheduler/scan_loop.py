@@ -309,6 +309,19 @@ def run_tick(
             )
             report.notes.append(f"regime_ranging:{snap.reason}")
 
+    # 7.6 Earnings calendar — populate ctx with today's results-day set,
+    # consumed inside _evaluate_symbol per-symbol filter.
+    ctx.earnings_set = set()
+    ef_mode = getattr(ctx.settings.strategy, "earnings_filter", "off")
+    if ef_mode != "off":
+        from strategy.earnings_calendar import load_earnings_today
+        path = ctx.settings.strategy.earnings_calendar_path
+        ctx.earnings_set = load_earnings_today(path)
+        logger.info(
+            "[{}] earnings filter={} symbols={}",
+            trace_id, ef_mode, len(ctx.earnings_set),
+        )
+
     # 8. Per-symbol evaluation.
     for sym in ctx.effective_universe():
         signal = _evaluate_symbol(ctx, sym, candles_by_symbol.get(sym), ts, trace_id)
@@ -419,6 +432,21 @@ def _evaluate_symbol(
             trace_id, trade_mode_now,
         )
         return None
+
+    # Earnings-calendar filter — exclude OR restrict-to results-today symbols.
+    ef_mode = getattr(ctx.settings.strategy, "earnings_filter", "off")
+    if ef_mode != "off":
+        from strategy.earnings_calendar import symbol_passes_earnings_filter
+        ok, reason = symbol_passes_earnings_filter(
+            symbol, getattr(ctx, "earnings_set", set()), ef_mode,
+        )
+        if not ok:
+            _record_snapshot(
+                ctx, ts, symbol, 0, {}, "skipped_filter",
+                f"earnings_filter_{ef_mode}:{reason}",
+                trace_id, trade_mode_now,
+            )
+            return None
 
     df = _candles_to_df(candles)
     long_score = score_symbol(df, ctx.settings.strategy)

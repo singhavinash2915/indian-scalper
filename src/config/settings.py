@@ -71,6 +71,10 @@ strategy:
   short_rsi_entry_low: 25
   short_rsi_entry_high: 45
   short_rsi_hard_block: 22
+  # Earnings-calendar filter — see RUNBOOK §earnings.
+  #   off | exclude | restrict_to
+  earnings_filter: "off"
+  earnings_calendar_path: data/earnings/today.csv
 
 risk:
   risk_per_trade_pct: 2.0
@@ -188,6 +192,16 @@ class StrategyCfg(BaseModel):
     short_rsi_entry_low: float = 25.0
     short_rsi_entry_high: float = 45.0
     short_rsi_hard_block: float = 22.0   # RSI below this = too oversold to short
+
+    # ---- Earnings-calendar filter ----
+    # Restrict trading based on which symbols have results today.
+    #   off          — no filter (default)
+    #   exclude      — skip symbols whose results are today (safer; avoids gap risk)
+    #   restrict_to  — ONLY trade symbols whose results are today (event-driven)
+    # Earnings list is read from earnings_calendar_path — one symbol per line,
+    # # comments allowed. Update before market open (manually or via NSE scraper).
+    earnings_filter: Literal["off", "exclude", "restrict_to"] = "off"
+    earnings_calendar_path: str = "data/earnings/today.csv"
 
 
 class RiskCfg(BaseModel):
