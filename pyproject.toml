@@ -47,6 +47,7 @@ scalper-auto-resume = "auto_resume:main"
 scalper-pine-parity = "pine_parity:main"
 scalper-live-ltp = "live_ltp:main"
 scalper-upstox-auth = "upstox_auth:main"
+scalper-backtest = "backtest_cli:main"
 
 # src/-layout with hatchling: every sub-package listed below gets
 # installed at the top level (sources = ["src"] strips the prefix) so
@@ -81,6 +82,7 @@ include = [
     "src/pine_parity.py",
     "src/live_ltp.py",
     "src/upstox_auth.py",
+    "src/backtest_cli.py",
 ]
 
 [tool.pytest.ini_options]
