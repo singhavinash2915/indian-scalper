@@ -151,7 +151,16 @@ def main() -> None:
     logger.info("uvicorn bind: {}:{} ({})", host, port, decision.reason)
 
     try:
-        uvicorn.run(app, host=host, port=port, log_level=log_level)
+        # proxy_headers + forwarded_allow_ips=* tell uvicorn to honour
+        # X-Forwarded-Proto / X-Forwarded-For headers from upstream proxies
+        # (Tailscale Serve, Cloudflare Tunnel, nginx). Without this, behind
+        # an HTTPS-terminating proxy the app sees scheme=http and
+        # request.url_for() generates http:// URLs that mismatch the
+        # registered https:// redirect_uri at Upstox → 502 on OAuth callback.
+        uvicorn.run(
+            app, host=host, port=port, log_level=log_level,
+            proxy_headers=True, forwarded_allow_ips="*",
+        )
     finally:
         logger.info("Shutting down scheduler…")
         scheduler.shutdown(wait=False)
