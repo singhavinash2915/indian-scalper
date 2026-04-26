@@ -342,7 +342,10 @@ def run_tick(
             report.signals.append(signal)
 
     # 9. Options track — runs in parallel with equity. Disabled by default.
-    if ctx.settings.strategy.options_enabled:
+    # Skipped under BacktestCandleFetcher: NIFTY/BANKNIFTY index candles
+    # aren't seeded in equity-only backtests, so the eval would error
+    # every tick. The options backtest (B5) gets its own dedicated path.
+    if ctx.settings.strategy.options_enabled and not is_backtest:
         try:
             opt_exits = _manage_options_positions(ctx, ts, trace_id)
             report.exits.extend(opt_exits)
