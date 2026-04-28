@@ -321,12 +321,21 @@ class PaperBroker(BrokerBase):
         return list(self.om.positions.values())
 
     def get_funds(self) -> dict[str, float]:
-        used = sum(abs(p.qty) * p.avg_price for p in self.om.positions.values())
+        # Signed notional handles longs + shorts correctly:
+        # long qty>0 contributes +value, short qty<0 contributes -value
+        # (the cash from selling short was already added to self.cash at
+        # fill time; the negative notional represents the obligation to
+        # buy back at LTP).
+        signed_notional = sum(p.qty * p.avg_price for p in self.om.positions.values())
+        # "used" = absolute capital deployed (longs only, plus the cash
+        # received from shorts treated as not-available for new entries).
+        # This is what the dashboard's "Cash used" tile should show.
+        used_for_display = sum(abs(p.qty) * p.avg_price for p in self.om.positions.values())
         pnl = self.om.total_pnl()
         return {
             "available": self.om.cash,
-            "used": used,
-            "equity": self.om.cash + used + pnl,
+            "used": used_for_display,
+            "equity": self.om.cash + signed_notional + pnl,
         }
 
     # ------------------------------------------------------------------ #

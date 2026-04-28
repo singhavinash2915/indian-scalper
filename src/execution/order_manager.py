@@ -319,11 +319,18 @@ class OrderManager:
         return sum(p.pnl for p in self.positions.values())
 
     def equity(self) -> float:
-        used = sum(abs(p.qty) * p.avg_price for p in self.positions.values())
-        return self.cash + used + self.total_pnl()
+        # Signed notional: long qty>0 adds value, short qty<0 represents
+        # a liability (cash already received via _fill, so we subtract it
+        # back here to net to true mark-to-market equity).
+        # equity = cash + Σ(qty × avg_price) + Σ(qty × (ltp - avg_price))
+        #        = cash + Σ(qty × ltp)
+        signed_notional = sum(p.qty * p.avg_price for p in self.positions.values())
+        return self.cash + signed_notional + self.total_pnl()
 
     def snapshot_equity(self, ts: datetime | None = None) -> None:
         ts = ts or datetime.now(IST)
         pnl = self.total_pnl()
-        used = sum(abs(p.qty) * p.avg_price for p in self.positions.values())
-        self.store.snapshot_equity(ts, self.cash + used + pnl, self.cash, pnl)
+        signed_notional = sum(p.qty * p.avg_price for p in self.positions.values())
+        self.store.snapshot_equity(
+            ts, self.cash + signed_notional + pnl, self.cash, pnl,
+        )
