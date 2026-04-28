@@ -22,6 +22,35 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Load .env into os.environ as early as possible — _default_fetcher() at
+# broker init time checks os.environ.get("UPSTOX_ACCESS_TOKEN") to pick
+# UpstoxFetcher vs the yfinance fallback. python-dotenv is already a dep.
+def _load_dotenv() -> None:
+    candidates = [
+        Path(".env"),
+        Path("/app/.env"),
+        Path(__file__).resolve().parent.parent / ".env",
+    ]
+    for p in candidates:
+        if not p.exists():
+            continue
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(p, override=False)   # don't clobber explicit env vars
+            return
+        except Exception:
+            # Manual fallback when python-dotenv is unavailable for any reason.
+            for line in p.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.strip())
+            return
+
+
+_load_dotenv()
+
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger

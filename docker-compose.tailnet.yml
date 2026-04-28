@@ -77,6 +77,12 @@ services:
       # the token gets refreshed via the web flow. Other secrets in here
       # are unchanged — _write_dotenv preserves comments + ordering.
       - ./.env:/app/.env:rw
+    # env_file populates the container's process env from .env so the
+    # bot inherits UPSTOX_API_KEY/SECRET/ACCESS_TOKEN at uvicorn startup.
+    # Without this, _default_fetcher() sees UPSTOX_ACCESS_TOKEN missing
+    # and silently falls back to YFinanceFetcher (delayed feed).
+    env_file:
+      - .env
     environment:
       - TZ=Asia/Kolkata
       # 0.0.0.0 is safe here: the only interface that exists in the
