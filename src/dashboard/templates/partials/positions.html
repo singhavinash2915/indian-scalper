@@ -32,6 +32,16 @@
   {% endfor %}
   </tbody>
 </table>
+{# Live refresh indicator — visible heartbeat so the operator can see polling is alive. #}
+{% set rendered_at = render_now or '' %}
+<div style="display: flex; justify-content: flex-end; align-items: center; gap: 6px;
+            font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+            color: var(--text-mute); padding: 6px 12px 0;">
+  <span style="display:inline-block;width:6px;height:6px;border-radius:50%;
+               background:var(--good);box-shadow:0 0 8px var(--good);
+               animation:pulse-dot 2s infinite;"></span>
+  live · refreshed {{ rendered_at }}
+</div>
 {% else %}
 <div class="empty">No open positions.</div>
 {% endif %}

@@ -126,6 +126,20 @@ def create_app(
     app = FastAPI(title="Indian Scalper Dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+    # Force no-cache on every partial — Tailscale Serve / Cloudflare / nginx
+    # in front of us can otherwise serve a 5-second-old payload from cache,
+    # making HTMX polling appear "frozen". Belt + braces: also disable
+    # HTML/api cache headers globally.
+    @app.middleware("http")
+    async def _no_cache_for_partials(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/partials/") or path.startswith("/api/") or path.startswith("/m/partials/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     if universe_registry is None:
         universe_registry = UniverseRegistry(broker.store, broker.instruments)
 
@@ -164,6 +178,7 @@ def create_app(
             state.broker.refresh_live_ltp()
         except Exception:
             pass
+        render_now = now_ist().strftime("%H:%M:%S")
         positions = state.broker.get_positions()
         enriched = [
             {
@@ -180,7 +195,8 @@ def create_app(
             for p in positions
         ]
         return templates.TemplateResponse(
-            request, "partials/positions.html", {"positions": enriched},
+            request, "partials/positions.html",
+            {"positions": enriched, "render_now": render_now},
         )
 
     @app.get("/partials/trades", response_class=HTMLResponse)
