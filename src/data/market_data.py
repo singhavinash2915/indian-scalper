@@ -365,6 +365,13 @@ class UpstoxFetcher:
             if sym is None:
                 continue
             price = float(payload.get("last_price", 0.0))
+            if price <= 0:
+                # Upstox occasionally returns last_price=0 at session
+                # boundaries / illiquid moments. Don't poison the cache —
+                # let the caller's fallback (entry price, last good LTP)
+                # take over.
+                logger.debug("UpstoxFetcher: dropping zero LTP for {}", sym)
+                continue
             fresh[sym] = price
             self._ltp_cache[sym] = (now, price)
         return fresh
